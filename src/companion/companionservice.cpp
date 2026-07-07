@@ -170,7 +170,8 @@ void CompanionService::onLoadToDeckRequested(int deck, int trackId, bool play) {
     VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager && m_pPlayerManager) {
         return;
     }
-    const TrackId id(QVariant(trackId));
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
     if (!id.isValid()) {
         kLogger.warning() << "load: invalid track id" << trackId;
         return;
