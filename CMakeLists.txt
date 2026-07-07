@@ -2855,6 +2855,14 @@ if(BUILD_TESTING)
     )
   endif()
 
+  if(COMPANION_API)
+    target_sources(
+      mixxx-test
+      PRIVATE
+        src/test/companionwaveformtest.cpp
+    )
+  endif()
+
   set_target_properties(mixxx-test PROPERTIES AUTOMOC ON)
   target_link_libraries(
     mixxx-test
@@ -4975,6 +4983,7 @@ if(COMPANION_API)
       src/companion/httpconnection.cpp
       src/companion/deckstatepublisher.cpp
       src/companion/trackserializer.cpp
+      src/companion/waveformmxwf.cpp
   )
   target_compile_definitions(mixxx-lib PUBLIC __COMPANION__)
 endif()

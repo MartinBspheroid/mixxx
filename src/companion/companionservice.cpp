@@ -16,6 +16,7 @@
 #include "companion/companionserver.h"
 #include "companion/companionsettings.h"
 #include "companion/trackserializer.h"
+#include "companion/waveformmxwf.h"
 #include "library/dao/analysisdao.h"
 #include "library/searchquery.h"
 #include "library/searchqueryparser.h"
@@ -468,46 +469,13 @@ QByteArray CompanionService::exportWaveformSummary(int trackId) {
         return QByteArray();
     }
 
-    // getDataSize() counts interleaved L/R entries (even=Left, odd=Right), so
-    // the number of visual frames is half that.
-    const int dataSize = pWaveform->getDataSize();
-    const int frames = dataSize / 2;
-
     double durationSeconds = 0.0;
     const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
     if (pTrack) {
         durationSeconds = pTrack->getDuration();
     }
-
-    // MXWF v1: 32-byte header + frames*4 bytes (all,low,mid,high; L/R max-mixed).
-    QByteArray blob;
-    QDataStream ds(&blob, QIODevice::WriteOnly);
-    ds.setByteOrder(QDataStream::LittleEndian);
-    ds.setFloatingPointPrecision(QDataStream::SinglePrecision);
-    ds.writeRawData("MXWF", 4);
-    ds << static_cast<quint16>(1); // version
-    ds << static_cast<quint16>(0); // flags (0 = mono-mixed)
-    ds << static_cast<quint32>(trackId);
-    ds << static_cast<float>(durationSeconds);
-    ds << static_cast<quint32>(frames); // sampleCount (visual frames)
-    ds << static_cast<quint8>(1);       // channels (mono-mixed)
-    ds << static_cast<quint8>(4);       // bands: all, low, mid, high
-    ds << static_cast<quint16>(0);      // reserved
-    ds << static_cast<quint64>(0);      // reserved
-
-    for (int f = 0; f < frames; ++f) {
-        const int l = 2 * f;
-        const int r = l + 1;
-        ds << static_cast<quint8>(
-                qMax(pWaveform->getAll(l), pWaveform->getAll(r)));
-        ds << static_cast<quint8>(
-                qMax(pWaveform->getLow(l), pWaveform->getLow(r)));
-        ds << static_cast<quint8>(
-                qMax(pWaveform->getMid(l), pWaveform->getMid(r)));
-        ds << static_cast<quint8>(
-                qMax(pWaveform->getHigh(l), pWaveform->getHigh(r)));
-    }
-    return blob;
+    return encodeWaveformSummaryMxwf(
+            static_cast<quint32>(trackId), *pWaveform, durationSeconds);
 }
 
 void CompanionService::onLoadToDeckRequested(int deck, int trackId, bool play) {
