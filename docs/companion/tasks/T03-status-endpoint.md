@@ -41,3 +41,15 @@ settings → thread → socket → JSON response, and gives every later task a h
 ## Out of scope
 
 WebSocket (T04), auth (T08), any other endpoint.
+
+---
+
+## Completion note (implemented, pending build verification)
+
+`httpconnection.h/.cpp` parses HTTP/1.1 (peek-based classification so WebSocket
+upgrades can be handed to `QWebSocketServer` with the buffer intact; oversized
+requests rejected; one-request-per-connection with `Connection: close`).
+`companionserver.cpp` routes `GET /v1/status` to the spec payload and returns a JSON
+404 for unknown paths. Bind address from settings (loopback unless `allow_lan`).
+`HACKING.md` written. Malformed-input and port-in-use paths log and degrade instead
+of crashing. Manual `curl`/`websocat` verification is part of T11.

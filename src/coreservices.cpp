@@ -61,6 +61,9 @@
 #include "util/time.h"
 #include "util/translations.h"
 #include "util/versionstore.h"
+#ifdef __COMPANION__
+#include "companion/companionservice.h"
+#endif
 #include "vinylcontrol/vinylcontrolmanager.h"
 
 #ifdef __APPLE__
@@ -752,6 +755,16 @@ void CoreServices::initialize(QApplication* pApp) {
         }
     }
 
+#ifdef __COMPANION__
+    // The companion API observes decks and the library. Construct it after both
+    // are fully wired; start() is a no-op unless enabled in settings.
+    m_pCompanionService = std::make_unique<companion::CompanionService>(
+            pConfig,
+            m_pPlayerManager.get(),
+            VersionStore::version());
+    m_pCompanionService->start();
+#endif
+
     m_isInitialized = true;
 
 #ifdef MIXXX_USE_QML
@@ -908,6 +921,17 @@ void CoreServices::finalize() {
 
     Timer t("CoreServices::~CoreServices");
     t.start();
+
+#ifdef __COMPANION__
+    // Stop the companion API first: it observes decks and the library, so it
+    // must release its worker thread and stop accepting connections before the
+    // objects it references are torn down.
+    qDebug() << t.elapsed(false).debugMillisWithUnit() << "stopping Companion API";
+    if (m_pCompanionService) {
+        m_pCompanionService->stop();
+        m_pCompanionService.reset();
+    }
+#endif
 
 #ifdef MIXXX_USE_QML
     // Delete all the QML singletons in order to prevent controller leaks

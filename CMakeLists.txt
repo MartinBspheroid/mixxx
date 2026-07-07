@@ -358,6 +358,11 @@ option(QT6 "Build with Qt6" ON)
 # Once this is fixed we can revert the commit introducing this.
 option(QML "Build with QML" OFF)
 
+# Companion API: a local WebSocket/HTTP service that exposes deck state, loaded
+# track metadata, library search and safe remote actions to companion clients
+# (e.g. a phone app). See docs/companion/ for the design and task plans.
+option(COMPANION_API "Build the companion network API" ON)
+
 if(QT6)
   set(QOPENGL ON CACHE INTERNAL "Forced ON because QT6=ON")
 else()
@@ -3579,6 +3584,13 @@ set(
   Widgets
   Xml
 )
+if(COMPANION_API)
+  # QtWebSockets provides QWebSocketServer for the companion /ws/v1 endpoint.
+  # The HTTP layer is served over QTcpServer (QtNetwork, already listed) so no
+  # QtHttpServer dependency is required. Components appended here are linked to
+  # mixxx-lib by the foreach loop after find_package below.
+  list(APPEND QT_COMPONENTS WebSockets)
+endif()
 set(QT_EXTRA_COMPONENTS "")
 if(QT6)
   find_package(QT 6.2 NAMES Qt6 COMPONENTS Core REQUIRED)
@@ -4952,6 +4964,21 @@ if(BULK)
 endif()
 
 # Vinyl Control
+# Companion API
+if(COMPANION_API)
+  target_sources(
+    mixxx-lib
+    PRIVATE
+      src/companion/companionservice.cpp
+      src/companion/companionsettings.cpp
+      src/companion/companionserver.cpp
+      src/companion/httpconnection.cpp
+      src/companion/deckstatepublisher.cpp
+      src/companion/trackserializer.cpp
+  )
+  target_compile_definitions(mixxx-lib PUBLIC __COMPANION__)
+endif()
+
 default_option(VINYLCONTROL "Vinyl Control support" "NOT MACAPPSTORE")
 if(VINYLCONTROL)
   if(MACAPPSTORE)

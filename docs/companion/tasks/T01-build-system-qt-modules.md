@@ -46,3 +46,21 @@ Mixxx wiki/CONTRIBUTING.md is part of this task.
 ## Out of scope
 
 Any actual server logic (T02/T03); preferences; CI.
+
+---
+
+## Completion note (implemented, pending build verification)
+
+- `CMakeLists.txt`: added `option(COMPANION_API "Build the companion network API" ON)`;
+  conditional `list(APPEND QT_COMPONENTS WebSockets)` before `find_package`;
+  `if(COMPANION_API)` block adding the six `src/companion/*.cpp` sources and
+  `target_compile_definitions(mixxx-lib PUBLIC __COMPANION__)`.
+- **HTTP-layer decision (D11):** hand-rolled HTTP/1.1 over `QTcpServer` (QtNetwork,
+  already linked). **No QtHttpServer dependency** — avoids a module that may be
+  absent/tech-preview in the vcpkg env and on older Qt (Raspberry Pi OS). WebSocket
+  shares the port via `Upgrade` handoff to `QWebSocketServer` (D12).
+- WebSockets links automatically via the existing `foreach(component ${QT_COMPONENTS})`
+  loop; no extra `target_link_libraries` needed.
+- **Not yet verified by a real build** (no Qt SDK/cmake in the authoring env). T11
+  must confirm the vcpkg env provides `qtwebsockets` and that both `ON`/`OFF`
+  configs build.

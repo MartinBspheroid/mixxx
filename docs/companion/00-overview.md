@@ -112,3 +112,5 @@ mappings. These are phased behind the MVP (see roadmap below).
 | D8 | JSON for events/DTOs; explicit little-endian binary for waveforms | Debuggable; endianness-safe across arm64/x86_64 |
 | D9 | Android client: native Kotlin + Jetpack Compose (separate repo) | LAN discovery, wake locks, tablet layouts, background sockets age better than RN/PWA |
 | D10 | Docs-first: API spec updated in the same PR as code | "Thorough documentation" is a stated project goal |
+| D11 | HTTP layer is hand-rolled over `QTcpServer` (QtNetwork); no QtHttpServer dependency | QtHttpServer may be absent/tech-preview in the prebuilt vcpkg env and on older Qt shipped by Raspberry Pi OS; our route surface is tiny; zero new porting cost across macOS/Linux/RasPi (T01) |
+| D12 | WebSocket shares the same TCP port as HTTP via `Upgrade`-header handoff to `QWebSocketServer` | One port to configure/pair/firewall; `QWebSocketServer::handleConnection()` accepts a handed-over `QTcpSocket` (T04) |

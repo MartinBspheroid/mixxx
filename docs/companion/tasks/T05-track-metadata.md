@@ -53,3 +53,15 @@
 ## Out of scope
 
 Search (T06), artwork endpoints (Phase 3), cue markers (T09).
+
+---
+
+## Completion note (implemented, pending build verification)
+
+`trackserializer.h/.cpp`: `serializeTrack(const TrackPointer&, bool exposeFilePaths)`
+→ `TrackDto` JSON. Verified getters: getId (TrackId::toVariant().toInt()), getTitle,
+getArtist, getAlbum, getGenre, getComment, getBpm, getKeyText, getDuration, getRating,
+getTimesPlayed, getColor (`mixxx::RgbColor::toQString`), getLocation (gated).
+Omission rules applied; title/artist always present. Called only on the main thread
+from `CompanionService::onDeckLoaded`. The `/v1/tracks/:id` HTTP endpoint (needs
+main-thread marshalling) is deferred to the T06 work with the search endpoint.

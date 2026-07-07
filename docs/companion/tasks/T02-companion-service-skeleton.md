@@ -66,3 +66,19 @@ whole point of this task) and `01-codebase-map.md` §8.
 ## Out of scope
 
 Sockets, endpoints, ControlProxy, deck signals (T03/T04).
+
+---
+
+## Completion note (implemented, pending build verification)
+
+Created: `companiondefs.h` (constants), `companionsettings.h/.cpp` (config wrapper),
+`companionservice.h/.cpp` (facade + worker-thread lifecycle + deck signal wiring),
+`companionserver.h/.cpp` (worker-thread listeners), plus files shared with T03–T05.
+Wired into `src/coreservices.cpp` behind `#ifdef __COMPANION__`: constructed at the
+end of `initialize()` (after decks + library), stopped/reset first in `finalize()`.
+Thread model per `02-architecture.md`: `CompanionService` on the main thread owns a
+`QThread` named `CompanionAPI`; `CompanionServer` is moved to it and `initialize()`d
+via a queued call so all sockets/timers are created on the worker thread. Teardown
+uses a `BlockingQueuedConnection` `shutdown()` that deletes thread-affine children on
+the worker, then `quit()`/`wait()`/`delete` (mirrors the ControllerManager pattern).
+Mixxx uses its own `mixxx::Logger` (context `"Companion"`), not `Q_LOGGING_CATEGORY`.

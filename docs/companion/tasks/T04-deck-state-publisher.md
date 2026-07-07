@@ -62,3 +62,19 @@ the phone.
 ## Out of scope
 
 Track metadata richness (T05), actions (T07), waveform (T09), auth (T08).
+
+---
+
+## Completion note (implemented, pending build verification)
+
+WebSocket `/ws/v1` served on the same port via `Upgrade` handoff; client registry,
+`hello`/`subscribe`/`ping`→`pong`, and on-connect replay of loaded decks in
+`companionserver.cpp`. `deckstatepublisher.cpp` polls the control system on the
+worker thread via the thread-safe `ControlObject::get()` (track_loaded, playposition,
+duration, `rate_ratio` for effective rate, play, vu_meter) at `tick_interval_ms`,
+change-gated with a 1 s keepalive and a jump detector that emits `deck.seek`.
+Load/unload events originate from `BaseTrackPlayer` signals on the main thread
+(`CompanionService`), which bumps a per-deck generation and forwards serialized JSON
+to the server via queued signals; the server stamps generation + serverTimeMs.
+Deferred: adversarial/soak verification and drift measurement (T11); auth-gating of
+the WS upgrade (T08).

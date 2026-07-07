@@ -30,6 +30,12 @@ class ControlIndicatorTimer;
 class DbConnectionPool;
 class ScreensaverManager;
 
+#ifdef __COMPANION__
+namespace companion {
+class CompanionService;
+}
+#endif
+
 class CoreServices : public QObject {
     Q_OBJECT
 
@@ -141,6 +147,9 @@ class CoreServices : public QObject {
     std::shared_ptr<DbConnectionPool> m_pDbConnectionPool;
     std::shared_ptr<TrackCollectionManager> m_pTrackCollectionManager;
     std::shared_ptr<Library> m_pLibrary;
+#ifdef __COMPANION__
+    std::unique_ptr<companion::CompanionService> m_pCompanionService;
+#endif
 
     std::shared_ptr<KeyboardEventFilter> m_pKeyboardEventFilter;
     std::shared_ptr<ConfigObject<ConfigValueKbd>> m_pKbdConfig;
