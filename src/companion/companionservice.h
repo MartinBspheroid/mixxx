@@ -69,6 +69,7 @@ class CompanionService : public QObject {
     void onDeckUnloaded(int deckIndex);
     void onNumberOfDecksChanged(int numDecks);
     void onLoadToDeckRequested(int deck, int trackId, bool play);
+    void onPersistTokens(const QString& tokensJson);
 
     UserSettingsPointer m_pConfig;
     PlayerManager* m_pPlayerManager;

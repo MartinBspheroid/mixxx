@@ -7,6 +7,9 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
+
+#include "companion/pairingmanager.h"
 
 class QTcpServer;
 class QTcpSocket;
@@ -41,6 +44,7 @@ class CompanionServer : public QObject {
             QString appVersion,
             int numDecks,
             QObject* pQueryHandler,
+            const QString& pairedTokensJson,
             QObject* parent = nullptr);
     ~CompanionServer() override;
 
@@ -67,10 +71,14 @@ class CompanionServer : public QObject {
     /// A client asked to load a library track to a deck. Handled on the main
     /// thread by CompanionService (track lookup + PlayerManager).
     void loadToDeckRequested(int deck, int trackId, bool play);
+    /// The paired-token set changed; the JSON should be persisted to settings on
+    /// the main thread.
+    void persistTokens(const QString& tokensJson);
 
   private slots:
     void onNewConnection();
-    void onWebSocketUpgradeRequested(QTcpSocket* pSocket);
+    void onWebSocketUpgradeRequested(
+            QTcpSocket* pSocket, const QByteArray& token, bool fromLoopback);
     void onWebSocketConnection();
     void onClientDisconnected();
     void onClientTextMessage(const QString& message);
@@ -79,6 +87,7 @@ class CompanionServer : public QObject {
 
   private:
     HttpResponse route(const HttpRequest& request);
+    HttpResponse handlePairing(const QStringList& segments, const HttpRequest& request);
     HttpResponse handleStatus();
     HttpResponse handleDecks();
     QJsonObject deckStateJson(int deck) const;
@@ -99,6 +108,8 @@ class CompanionServer : public QObject {
     const QString m_appVersion;
     int m_numDecks;
     QObject* m_pQueryHandler;
+
+    PairingManager m_pairing;
 
     QTcpServer* m_pTcpServer;
     QWebSocketServer* m_pWsServer;

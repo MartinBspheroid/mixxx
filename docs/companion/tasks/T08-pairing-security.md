@@ -54,3 +54,43 @@ must not accept commands from strangers.
 
 TLS/wss, mDNS/DNS-SD discovery (nice-to-have — record as a follow-up task if
 desired), Preferences UI polish.
+
+---
+
+## Completion note (implemented, tested, runtime-verified)
+
+Implemented `src/companion/pairingmanager.{h,cpp}`: hashed (SHA-256) token store,
+60 s pairing-code window with a 5-attempt lockout, 32-byte random tokens
+(`QRandomGenerator::system()`), read-only vs control scopes, JSON serialize/load
+for persistence. Auth is enforced at a single choke point in
+`CompanionServer::route()` (loopback trusted; LAN needs a valid token; POST/write
+needs a control-scope token) and on the WS upgrade in
+`onWebSocketUpgradeRequested` (rejects with a raw 401 before handoff).
+`HttpConnection`/`HttpRequest` gained `fromLoopback` (from `peerAddress().isLoopback()`)
+and `bearerToken()` (Authorization: Bearer, else `?token=`).
+
+Endpoints: `POST /v1/pair` (loopback-only; returns code + `mixxx-companion://` QR),
+`POST /v1/pair/claim {code,deviceName,readOnly}` (code-gated, LAN-usable; returns the
+token once), `GET /v1/pair/devices` + `DELETE /v1/pair/devices/:id` (loopback-only).
+`/v1/status` `auth` field is `open-loopback` (loopback bind) or `token` (LAN bind),
+plus a `pairedDevices` bool.
+
+Persistence: tokens are stored in `[CompanionAPI] paired_tokens` (opaque JSON of the
+hashes) and flushed to disk **immediately** on pair/revoke via `ConfigObject::save()`
+(so a pairing survives an unclean exit, not just a graceful quit), loaded into the
+PairingManager in the CompanionServer ctor at startup.
+
+Verification:
+- **Unit tests (9/9 pass, `CompanionPairingTest`)**: loopback exemption, unauthorized
+  without token, full claim flow, read-only scope forbidden from control, expired
+  window, brute-force lockout, revoke invalidation, serialize/load round-trip, hashing.
+- **Runtime (real headless Mixxx, loopback)**: `POST /v1/pair` returns a code+QR;
+  `claim` mints a 64-hex token; `devices` lists the hashed id (never the token);
+  wrong code -> `bad_code`; `status.auth`/`pairedDevices` correct. Token written to
+  `mixxx.cfg` immediately and present after `kill -9`.
+- NOT observed only due to slow headless boot under heavy build load: the composed
+  restart read-back (both halves — disk write and `loadTokens` — are independently
+  verified). No graceful SIGTERM handler exists in Mixxx, which is why the immediate
+  `save()` matters and why `timeout`-killed runs never wrote settings before.
+
+Out of scope (unchanged): TLS/wss, mDNS discovery, Preferences UI.

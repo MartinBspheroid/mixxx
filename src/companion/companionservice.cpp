@@ -103,7 +103,8 @@ void CompanionService::start() {
             settings.tickIntervalMs(),
             m_appVersion,
             numDecks,
-            this); // query handler (runLibrarySearch runs on this main thread)
+            this, // query handler (runLibrarySearch runs on this main thread)
+            settings.pairedTokens());
     m_pServer->moveToThread(m_pThread);
 
     connect(this,
@@ -123,6 +124,10 @@ void CompanionService::start() {
             &CompanionServer::loadToDeckRequested,
             this,
             &CompanionService::onLoadToDeckRequested);
+    connect(m_pServer,
+            &CompanionServer::persistTokens,
+            this,
+            &CompanionService::onPersistTokens);
 
     m_pThread->start();
     // Create sockets and listeners on the worker thread once its event loop runs.
@@ -476,6 +481,13 @@ QByteArray CompanionService::exportWaveformSummary(int trackId) {
     }
     return encodeWaveformSummaryMxwf(
             static_cast<quint32>(trackId), *pWaveform, durationSeconds);
+}
+
+void CompanionService::onPersistTokens(const QString& tokensJson) {
+    // Runs on the main thread (settings write). Flush to disk immediately so a
+    // pairing survives an unclean exit, not only a graceful quit.
+    CompanionSettings(m_pConfig).setPairedTokens(tokensJson);
+    m_pConfig->save();
 }
 
 void CompanionService::onLoadToDeckRequested(int deck, int trackId, bool play) {

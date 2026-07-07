@@ -2860,6 +2860,7 @@ if(BUILD_TESTING)
       mixxx-test
       PRIVATE
         src/test/companionwaveformtest.cpp
+        src/test/companionpairingtest.cpp
     )
   endif()
 
@@ -4982,6 +4983,7 @@ if(COMPANION_API)
       src/companion/companionserver.cpp
       src/companion/httpconnection.cpp
       src/companion/deckstatepublisher.cpp
+      src/companion/pairingmanager.cpp
       src/companion/trackserializer.cpp
       src/companion/waveformmxwf.cpp
   )

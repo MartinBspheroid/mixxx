@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QStringList>
@@ -36,6 +37,7 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
         QString appVersion,
         int numDecks,
         QObject* pQueryHandler,
+        const QString& pairedTokensJson,
         QObject* parent)
         : QObject(parent),
           m_bindAddress(std::move(bindAddress)),
@@ -47,6 +49,7 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
           m_pTcpServer(nullptr),
           m_pWsServer(nullptr),
           m_pPublisher(nullptr) {
+    m_pairing.loadTokens(pairedTokensJson);
 }
 
 CompanionServer::~CompanionServer() = default;
@@ -130,7 +133,19 @@ void CompanionServer::onNewConnection() {
     }
 }
 
-void CompanionServer::onWebSocketUpgradeRequested(QTcpSocket* pSocket) {
+void CompanionServer::onWebSocketUpgradeRequested(
+        QTcpSocket* pSocket, const QByteArray& token, bool fromLoopback) {
+    // WS clients only receive events (read-only), so control scope is not needed.
+    if (m_pairing.authorize(fromLoopback, token, /*needsControl*/ false) !=
+            PairingManager::AuthResult::Ok) {
+        pSocket->write(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n"
+                "Connection: close\r\n\r\n");
+        pSocket->flush();
+        pSocket->disconnectFromHost();
+        pSocket->deleteLater();
+        return;
+    }
     if (m_pWsServer) {
         m_pWsServer->handleConnection(pSocket);
     } else {
@@ -277,6 +292,28 @@ qint64 CompanionServer::serverTimeMs() const {
 }
 
 HttpResponse CompanionServer::route(const HttpRequest& request) {
+    const QStringList segments = request.path.split('/', Qt::SkipEmptyParts);
+
+    // Pairing endpoints carry their own auth rules (loopback / code-gated).
+    if (segments.size() >= 2 && segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("pair")) {
+        return handlePairing(segments, request);
+    }
+
+    // Auth gate for everything else: loopback is trusted; LAN needs a valid
+    // token, and any write (POST) needs a control-scope token.
+    const bool needsControl = (request.method == "POST");
+    switch (m_pairing.authorize(
+            request.fromLoopback, request.bearerToken(), needsControl)) {
+    case PairingManager::AuthResult::Ok:
+        break;
+    case PairingManager::AuthResult::Unauthorized:
+        return HttpResponse::error(401, "unauthorized");
+    case PairingManager::AuthResult::Forbidden:
+        return HttpResponse::error(
+                403, "action_not_allowed", "read-only token");
+    }
+
     if (request.method == "GET" && request.path == QLatin1String("/v1/status")) {
         return handleStatus();
     }
@@ -288,9 +325,6 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
             request.path == QLatin1String("/v1/decks")) {
         return handleDecks();
     }
-
-    const QStringList segments =
-            request.path.split('/', Qt::SkipEmptyParts);
 
     // GET /v1/decks/:deck
     if (request.method == "GET" && segments.size() == 3 &&
@@ -558,6 +592,83 @@ HttpResponse CompanionServer::handleDeckAction(
     return HttpResponse::error(403, "action_not_allowed", "unknown action");
 }
 
+HttpResponse CompanionServer::handlePairing(
+        const QStringList& segments, const HttpRequest& request) {
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+
+    // POST /v1/pair  (loopback only) -> open a pairing window
+    if (segments.size() == 2 && request.method == "POST") {
+        if (!request.fromLoopback) {
+            return HttpResponse::error(
+                    403, "action_not_allowed", "pairing must be started locally");
+        }
+        constexpr int kTtlSeconds = 60;
+        const QString code = m_pairing.beginPairing(kTtlSeconds, nowMs);
+        QJsonObject obj;
+        obj.insert(QStringLiteral("code"), code);
+        obj.insert(QStringLiteral("expiresInSeconds"), kTtlSeconds);
+        obj.insert(QStringLiteral("qr"),
+                QStringLiteral("mixxx-companion://pair?port=%1&code=%2")
+                        .arg(m_port)
+                        .arg(code));
+        kLogger.info() << "Companion pairing window opened for" << kTtlSeconds
+                       << "s";
+        return HttpResponse::json(
+                200, QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    }
+
+    // POST /v1/pair/claim  (code-gated, any origin)
+    if (segments.size() == 3 && segments.at(2) == QLatin1String("claim") &&
+            request.method == "POST") {
+        const QJsonObject body = QJsonDocument::fromJson(request.body).object();
+        const QString code = body.value(QStringLiteral("code")).toString();
+        const QString deviceName = body.value(QStringLiteral("deviceName"))
+                                           .toString(QStringLiteral("unknown"));
+        const bool readOnly =
+                body.value(QStringLiteral("readOnly")).toBool(false);
+        if (code.isEmpty()) {
+            return HttpResponse::error(400, "bad_request", "code required");
+        }
+        const PairingManager::ClaimResult result =
+                m_pairing.claim(code, deviceName, readOnly, nowMs);
+        if (!result.ok) {
+            const int status =
+                    result.error == QLatin1String("too_many_attempts") ? 429 : 401;
+            return HttpResponse::error(status, result.error.toUtf8());
+        }
+        emit persistTokens(m_pairing.serializeTokens());
+        QJsonObject obj;
+        obj.insert(QStringLiteral("token"), result.token);
+        obj.insert(QStringLiteral("readOnly"), readOnly);
+        return HttpResponse::json(
+                200, QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    }
+
+    // GET /v1/pair/devices  (loopback only)
+    if (segments.size() == 3 && segments.at(2) == QLatin1String("devices") &&
+            request.method == "GET") {
+        if (!request.fromLoopback) {
+            return HttpResponse::error(403, "action_not_allowed", "local only");
+        }
+        return HttpResponse::json(200, m_pairing.serializeDevices().toUtf8());
+    }
+
+    // DELETE /v1/pair/devices/:id  (loopback only)
+    if (segments.size() == 4 && segments.at(2) == QLatin1String("devices") &&
+            request.method == "DELETE") {
+        if (!request.fromLoopback) {
+            return HttpResponse::error(403, "action_not_allowed", "local only");
+        }
+        if (!m_pairing.revokeDevice(segments.at(3).toUtf8())) {
+            return HttpResponse::error(404, "not_found", "no such device");
+        }
+        emit persistTokens(m_pairing.serializeTokens());
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+
+    return HttpResponse::error(404, "not_found");
+}
+
 HttpResponse CompanionServer::handleStatus() {
     QJsonObject status;
     status.insert(QStringLiteral("app"), QStringLiteral("Mixxx"));
@@ -567,10 +678,12 @@ HttpResponse CompanionServer::handleStatus() {
     status.insert(QStringLiteral("libraryReady"), true);
     status.insert(QStringLiteral("uptimeMs"), serverTimeMs());
     status.insert(QStringLiteral("clients"), m_clients.size());
+    // Loopback-only bind is open; LAN-exposed binds require a bearer token.
     status.insert(QStringLiteral("auth"),
             m_bindAddress == QHostAddress(QHostAddress::LocalHost)
                     ? QStringLiteral("open-loopback")
-                    : QStringLiteral("open-lan"));
+                    : QStringLiteral("token"));
+    status.insert(QStringLiteral("pairedDevices"), m_pairing.hasPairedDevices());
     return HttpResponse::json(
             200, QJsonDocument(status).toJson(QJsonDocument::Compact));
 }

@@ -67,6 +67,19 @@ curl -s "http://127.0.0.1:24742/v1/library/search?q=bpm:120-128&bpmMin=124&key=8
 curl -s http://127.0.0.1:24742/v1/decks | jq
 curl -s http://127.0.0.1:24742/v1/decks/1 | jq
 
+# Pairing + auth (T08) — loopback is open; LAN clients need a bearer token
+#   1) from a trusted (loopback) shell, open a pairing window:
+curl -s -X POST http://127.0.0.1:24742/v1/pair | jq   # -> {code, expiresInSeconds, qr}
+#   2) the phone claims the code for a token (works from the LAN):
+curl -s -X POST http://<laptop>:24742/v1/pair/claim \
+     -d '{"code":"123456","deviceName":"my phone","readOnly":false}' | jq  # -> {token}
+#   3) the phone then authenticates every request:
+curl -s http://<laptop>:24742/v1/status -H "Authorization: Bearer <token>"
+#   WS: ws://<laptop>:24742/ws/v1?token=<token>
+#   manage devices (loopback only):
+curl -s http://127.0.0.1:24742/v1/pair/devices | jq
+curl -s -X DELETE http://127.0.0.1:24742/v1/pair/devices/<id>
+
 # Track detail, cues, and waveform (T09)
 curl -s http://127.0.0.1:24742/v1/tracks/1 | jq
 curl -s http://127.0.0.1:24742/v1/tracks/1/cues | jq

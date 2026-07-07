@@ -115,13 +115,21 @@ void HttpConnection::classifyAndDispatch() {
     const bool hasKey = headerBlock.contains("sec-websocket-key:");
 
     if (isGet && hasUpgrade && connUpgrade && hasKey) {
+        // Extract the auth token (?token=... on the WS URL) and loopback flag so
+        // the server can enforce auth before completing the upgrade.
+        HttpRequest wsRequest;
+        parseRequest(peeked.left(headerEnd + 4), &wsRequest);
+        const QByteArray token = wsRequest.bearerToken();
+        const bool fromLoopback =
+                m_pSocket->peerAddress().isLoopback();
+
         // Hand off to the WebSocket server. Detach so our deleteLater() does not
         // take the socket down with us.
         QTcpSocket* pSocket = m_pSocket;
         disconnect(pSocket, nullptr, this, nullptr);
         pSocket->setParent(nullptr);
         m_pSocket = nullptr;
-        emit webSocketUpgradeRequested(pSocket);
+        emit webSocketUpgradeRequested(pSocket, token, fromLoopback);
         deleteLater();
         return;
     }
@@ -173,6 +181,7 @@ void HttpConnection::handleHttpRequest() {
         fail(400, "bad_request");
         return;
     }
+    request.fromLoopback = m_pSocket && m_pSocket->peerAddress().isLoopback();
 
     HttpResponse response;
     if (m_router) {

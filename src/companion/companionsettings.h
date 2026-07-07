@@ -65,6 +65,17 @@ class CompanionSettings {
                 ConfigKey(kGroup, QStringLiteral("expose_file_paths")), false);
     }
 
+    /// Opaque JSON blob of paired device tokens (hashed). Persisted so pairings
+    /// survive restarts.
+    QString pairedTokens() const {
+        return m_pConfig->getValue(
+                ConfigKey(kGroup, QStringLiteral("paired_tokens")));
+    }
+    void setPairedTokens(const QString& json) const {
+        m_pConfig->set(ConfigKey(kGroup, QStringLiteral("paired_tokens")),
+                ConfigValue(json));
+    }
+
   private:
     static constexpr char kGroup[] = "[CompanionAPI]";
 

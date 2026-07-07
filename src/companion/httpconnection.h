@@ -20,9 +20,19 @@ struct HttpRequest {
     QUrlQuery query;                ///< parsed query string
     QHash<QByteArray, QByteArray> headers; ///< lower-cased header name -> value
     QByteArray body;                ///< request body (POST)
+    bool fromLoopback = false;      ///< peer is 127.0.0.1/::1 (trusted)
 
     QByteArray header(const char* name) const {
         return headers.value(QByteArray(name).toLower());
+    }
+
+    /// Token from `Authorization: Bearer <token>`, else the `token` query param.
+    QByteArray bearerToken() const {
+        const QByteArray auth = header("authorization");
+        if (auth.startsWith("Bearer ")) {
+            return auth.mid(7).trimmed();
+        }
+        return query.queryItemValue(QStringLiteral("token")).toUtf8();
     }
 };
 
@@ -69,7 +79,10 @@ class HttpConnection : public QObject {
     /// handed over with its buffer untouched (classification used peek only), so
     /// the receiver can pass it straight to QWebSocketServer::handleConnection().
     /// This HttpConnection relinquishes ownership of the socket before emitting.
-    void webSocketUpgradeRequested(QTcpSocket* pSocket);
+    /// `token` is the WS `?token=` param (or Authorization bearer); fromLoopback
+    /// marks a trusted peer. The receiver enforces auth before upgrading.
+    void webSocketUpgradeRequested(
+            QTcpSocket* pSocket, const QByteArray& token, bool fromLoopback);
 
   private slots:
     void onReadyRead();
