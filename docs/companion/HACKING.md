@@ -59,6 +59,10 @@ websocat ws://127.0.0.1:24742/ws/v1
 #   → deck.loaded / deck.tick / deck.seek / deck.unloaded
 #   On connect you get a replay of the currently loaded decks.
 
+# Library search (T06) — Mixxx search grammar in `q`, plus convenience filters
+curl -s "http://127.0.0.1:24742/v1/library/search?q=bicep&limit=5" | jq
+curl -s "http://127.0.0.1:24742/v1/library/search?q=bpm:120-128&bpmMin=124&key=8A" | jq
+
 # Unknown route -> 404 JSON error
 curl -s -i http://127.0.0.1:24742/v1/nope
 

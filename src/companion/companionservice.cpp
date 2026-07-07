@@ -1,11 +1,23 @@
 #include "companion/companionservice.h"
 
+#include <QEventLoop>
 #include <QMetaObject>
 #include <QThread>
+#include <QTimer>
+
+#include <QDateTime>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
 
 #include "companion/companionserver.h"
 #include "companion/companionsettings.h"
 #include "companion/trackserializer.h"
+#include "library/searchquery.h"
+#include "library/searchqueryparser.h"
+#include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
@@ -63,7 +75,8 @@ void CompanionService::start() {
             settings.port(),
             settings.tickIntervalMs(),
             m_appVersion,
-            numDecks);
+            numDecks,
+            this); // query handler (runLibrarySearch runs on this main thread)
     m_pServer->moveToThread(m_pThread);
 
     connect(this,
@@ -110,9 +123,21 @@ void CompanionService::stop() {
     }
 
     if (m_pServer && m_pThread) {
-        // Shut down the server on its own thread, then join.
-        QMetaObject::invokeMethod(
-                m_pServer, "shutdown", Qt::BlockingQueuedConnection);
+        // Shut down the server on its own thread, then join. We must NOT block
+        // the main thread here with a BlockingQueuedConnection: a worker HTTP
+        // handler may be mid-flight in a BlockingQueuedConnection call back to
+        // this (main) thread (e.g. a library search). Instead, post shutdown()
+        // and spin a local event loop so the main thread keeps servicing those
+        // in-flight calls until the server reports stopped(). A timeout guards
+        // against a wedged worker.
+        QEventLoop loop;
+        connect(m_pServer,
+                &CompanionServer::stopped,
+                &loop,
+                &QEventLoop::quit);
+        QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+        QMetaObject::invokeMethod(m_pServer, "shutdown", Qt::QueuedConnection);
+        loop.exec();
         m_pThread->quit();
         m_pThread->wait();
         // The thread has stopped, so it is safe to delete the (thread-affine)
@@ -162,6 +187,157 @@ void CompanionService::onNumberOfDecksChanged(int numDecks) {
         m_connectedDecks = numDecks;
     }
     emit numberOfDecksChangedEvent(numDecks);
+}
+
+QByteArray CompanionService::runLibrarySearch(const QString& q,
+        int bpmMin,
+        int bpmMax,
+        const QString& key,
+        int limit,
+        int offset) {
+    // Runs on the main thread (invoked via BlockingQueuedConnection). Mirrors
+    // BaseTrackCache: build the WHERE with Mixxx's own SearchQueryParser, then
+    // run a plain SELECT on the collection's main-thread DB connection.
+    QJsonObject result;
+    result.insert(QStringLiteral("query"), q);
+    result.insert(QStringLiteral("offset"), offset);
+    result.insert(QStringLiteral("limit"), limit);
+    QJsonArray tracks;
+
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        result.insert(QStringLiteral("total"), 0);
+        result.insert(QStringLiteral("tracks"), tracks);
+        return QJsonDocument(result).toJson(QJsonDocument::Compact);
+    }
+    TrackCollection* pCollection = m_pTrackCollectionManager->internalCollection();
+
+    // Bare, unqualified columns matched by a plain search term. "location" and
+    // "crate" are intentionally omitted (the former is ambiguous across the
+    // join, the latter needs crate storage traversal).
+    const QStringList searchColumns = {
+            QStringLiteral("artist"),
+            QStringLiteral("album"),
+            QStringLiteral("album_artist"),
+            QStringLiteral("grouping"),
+            QStringLiteral("comment"),
+            QStringLiteral("title"),
+            QStringLiteral("genre")};
+    SearchQueryParser parser(pCollection, searchColumns);
+    const std::unique_ptr<QueryNode> pNode = parser.parseQuery(q, QString());
+    const QString parsedWhere = pNode ? pNode->toSql() : QString();
+
+    // Convenience filters ANDed on top of the parsed query. These use bound
+    // parameters; the parsed WHERE is already escaped by the parser.
+    QStringList extraConditions;
+    if (bpmMin > 0) {
+        extraConditions << QStringLiteral("bpm >= :bpmMin");
+    }
+    if (bpmMax > 0) {
+        extraConditions << QStringLiteral("bpm <= :bpmMax");
+    }
+    if (!key.isEmpty()) {
+        extraConditions << QStringLiteral("key = :key");
+    }
+
+    QString whereClause = QStringLiteral(
+            "library.mixxx_deleted = 0 AND track_locations.fs_deleted = 0");
+    if (!parsedWhere.isEmpty()) {
+        whereClause += QStringLiteral(" AND (") + parsedWhere + QChar(')');
+    }
+    for (const QString& cond : extraConditions) {
+        whereClause += QStringLiteral(" AND ") + cond;
+    }
+
+    const QString fromWhere = QStringLiteral(
+            "FROM library "
+            "INNER JOIN track_locations "
+            "ON library.location = track_locations.id "
+            "WHERE ") + whereClause;
+
+    QSqlDatabase db = pCollection->database();
+
+    // Total (capped at 1000; a value of 1000 means ">= 1000").
+    int total = 0;
+    {
+        QSqlQuery countQuery(db);
+        countQuery.prepare(QStringLiteral("SELECT COUNT(*) ") + fromWhere);
+        if (bpmMin > 0) {
+            countQuery.bindValue(QStringLiteral(":bpmMin"), bpmMin);
+        }
+        if (bpmMax > 0) {
+            countQuery.bindValue(QStringLiteral(":bpmMax"), bpmMax);
+        }
+        if (!key.isEmpty()) {
+            countQuery.bindValue(QStringLiteral(":key"), key);
+        }
+        if (countQuery.exec() && countQuery.next()) {
+            total = qMin(countQuery.value(0).toInt(), 1000);
+        } else {
+            kLogger.warning() << "search count failed:"
+                              << countQuery.lastError().text();
+        }
+    }
+
+    QSqlQuery query(db);
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+            "SELECT library.id, artist, title, album, bpm, key, "
+            "duration, rating, timesplayed, last_played_at ") +
+            fromWhere +
+            QStringLiteral(
+                    " ORDER BY artist ASC, title ASC LIMIT :limit OFFSET :offset"));
+    if (bpmMin > 0) {
+        query.bindValue(QStringLiteral(":bpmMin"), bpmMin);
+    }
+    if (bpmMax > 0) {
+        query.bindValue(QStringLiteral(":bpmMax"), bpmMax);
+    }
+    if (!key.isEmpty()) {
+        query.bindValue(QStringLiteral(":key"), key);
+    }
+    query.bindValue(QStringLiteral(":limit"), limit);
+    query.bindValue(QStringLiteral(":offset"), offset);
+
+    if (!query.exec()) {
+        kLogger.warning() << "search query failed:" << query.lastError().text();
+    } else {
+        while (query.next()) {
+            QJsonObject row;
+            row.insert(QStringLiteral("id"), query.value(0).toInt());
+            row.insert(QStringLiteral("title"), query.value(2).toString());
+            row.insert(QStringLiteral("artist"), query.value(1).toString());
+            const QString album = query.value(3).toString();
+            if (!album.isEmpty()) {
+                row.insert(QStringLiteral("album"), album);
+            }
+            const double bpm = query.value(4).toDouble();
+            if (bpm > 0.0) {
+                row.insert(QStringLiteral("bpm"), bpm);
+            }
+            const QString keyText = query.value(5).toString();
+            if (!keyText.isEmpty()) {
+                row.insert(QStringLiteral("key"), keyText);
+            }
+            row.insert(QStringLiteral("durationSeconds"), query.value(6).toDouble());
+            const int rating = query.value(7).toInt();
+            if (rating > 0) {
+                row.insert(QStringLiteral("rating"), rating);
+            }
+            const QVariant lastPlayed = query.value(9);
+            if (!lastPlayed.isNull()) {
+                const QDateTime dt = lastPlayed.toDateTime();
+                if (dt.isValid()) {
+                    row.insert(QStringLiteral("lastPlayedAtIso"),
+                            dt.toString(Qt::ISODate));
+                }
+            }
+            tracks.append(row);
+        }
+    }
+
+    result.insert(QStringLiteral("total"), total);
+    result.insert(QStringLiteral("tracks"), tracks);
+    return QJsonDocument(result).toJson(QJsonDocument::Compact);
 }
 
 void CompanionService::onLoadToDeckRequested(int deck, int trackId, bool play) {

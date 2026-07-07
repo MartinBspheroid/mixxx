@@ -31,11 +31,16 @@ struct HttpResponse;
 class CompanionServer : public QObject {
     Q_OBJECT
   public:
+    /// @param pQueryHandler main-thread object exposing the invokable
+    ///        `QByteArray runLibrarySearch(...)` slot. Called via
+    ///        BlockingQueuedConnection for request/response endpoints that need
+    ///        main-thread DB access. Must outlive this server.
     CompanionServer(QHostAddress bindAddress,
             quint16 port,
             int tickIntervalMs,
             QString appVersion,
             int numDecks,
+            QObject* pQueryHandler,
             QObject* parent = nullptr);
     ~CompanionServer() override;
 
@@ -75,6 +80,7 @@ class CompanionServer : public QObject {
   private:
     HttpResponse route(const HttpRequest& request);
     HttpResponse handleStatus();
+    HttpResponse handleSearch(const HttpRequest& request);
     HttpResponse handleDeckAction(
             int deck, const QByteArray& action, const HttpRequest& request);
     bool isValidDeck(int deck) const;
@@ -87,6 +93,7 @@ class CompanionServer : public QObject {
     const int m_tickIntervalMs;
     const QString m_appVersion;
     int m_numDecks;
+    QObject* m_pQueryHandler;
 
     QTcpServer* m_pTcpServer;
     QWebSocketServer* m_pWsServer;

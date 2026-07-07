@@ -56,3 +56,26 @@ desktop search box), `TrackCollection`/`TrackDAO`, main-thread-only DAO rule.
 
 Playlists/crates endpoints (Phase 3), `library.changed` events (Phase 3),
 suggestions/compatibility scoring (Phase 5).
+
+---
+
+## Completion note (implemented + builds on Linux)
+
+`GET /v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` implemented as
+`CompanionService::runLibrarySearch` (main thread), invoked from the worker HTTP
+handler via `BlockingQueuedConnection`. Reuses Mixxx's `SearchQueryParser`
+(`q` uses the native search grammar) to build the WHERE, then runs a plain
+`SELECT ... FROM library INNER JOIN track_locations ON library.location=track_locations.id
+WHERE library.mixxx_deleted=0 AND track_locations.fs_deleted=0 [AND (parsed)] [AND bpm/key]`
+on `TrackCollection::database()`. `bpmMin/bpmMax/key` are bound-parameter conditions;
+`limit` clamped 1..200 (default 50); `total` is a COUNT capped at 1000. Search columns
+follow the library default minus `location`/`crate` (ambiguity / crate-storage).
+
+Deadlock-safety: `CompanionService::stop()` now posts `shutdown()` via
+QueuedConnection and spins a local `QEventLoop` (5 s timeout) so an in-flight
+BlockingQueued search can never wedge teardown.
+
+Builds clean: both companion objects compile and the full `mixxx` binary links
+(Ubuntu 24.04, Qt 6.4). Runtime verification of result correctness is under T11.
+Note: the `key` filter/return uses the raw `library.key` text column, whose notation
+may differ from `Track::getKeyText()`; revisit if exact key matching is needed.

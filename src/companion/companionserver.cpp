@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QStringList>
 #include <QTcpServer>
+#include <QUrlQuery>
 #include <QTcpSocket>
 #include <QWebSocket>
 #include <QWebSocketServer>
@@ -33,6 +34,7 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
         int tickIntervalMs,
         QString appVersion,
         int numDecks,
+        QObject* pQueryHandler,
         QObject* parent)
         : QObject(parent),
           m_bindAddress(std::move(bindAddress)),
@@ -40,6 +42,7 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
           m_tickIntervalMs(tickIntervalMs),
           m_appVersion(std::move(appVersion)),
           m_numDecks(numDecks),
+          m_pQueryHandler(pQueryHandler),
           m_pTcpServer(nullptr),
           m_pWsServer(nullptr),
           m_pPublisher(nullptr) {
@@ -276,6 +279,10 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
     if (request.method == "GET" && request.path == QLatin1String("/v1/status")) {
         return handleStatus();
     }
+    if (request.method == "GET" &&
+            request.path == QLatin1String("/v1/library/search")) {
+        return handleSearch(request);
+    }
 
     // POST /v1/decks/:deck/:action
     const QStringList segments =
@@ -299,6 +306,45 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
 
 bool CompanionServer::isValidDeck(int deck) const {
     return deck >= 1 && deck <= m_numDecks;
+}
+
+HttpResponse CompanionServer::handleSearch(const HttpRequest& request) {
+    if (!m_pQueryHandler) {
+        return HttpResponse::error(500, "internal", "no query handler");
+    }
+    const QUrlQuery& query = request.query;
+    const QString q = query.queryItemValue(QStringLiteral("q"));
+    const int bpmMin = query.queryItemValue(QStringLiteral("bpmMin")).toInt();
+    const int bpmMax = query.queryItemValue(QStringLiteral("bpmMax")).toInt();
+    const QString key = query.queryItemValue(QStringLiteral("key"));
+    int limit = 50;
+    if (query.hasQueryItem(QStringLiteral("limit"))) {
+        limit = query.queryItemValue(QStringLiteral("limit")).toInt();
+    }
+    limit = qBound(1, limit, 200);
+    int offset = query.queryItemValue(QStringLiteral("offset")).toInt();
+    if (offset < 0) {
+        offset = 0;
+    }
+
+    // Runs on the main thread (DB access); blocks this worker HTTP handler until
+    // it returns. CompanionService::stop() spins an event loop so this can never
+    // deadlock teardown.
+    QByteArray json;
+    const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+            "runLibrarySearch",
+            Qt::BlockingQueuedConnection,
+            Q_RETURN_ARG(QByteArray, json),
+            Q_ARG(QString, q),
+            Q_ARG(int, bpmMin),
+            Q_ARG(int, bpmMax),
+            Q_ARG(QString, key),
+            Q_ARG(int, limit),
+            Q_ARG(int, offset));
+    if (!ok) {
+        return HttpResponse::error(500, "internal", "search failed");
+    }
+    return HttpResponse::json(200, json);
 }
 
 HttpResponse CompanionServer::handleDeckAction(

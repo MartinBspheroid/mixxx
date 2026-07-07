@@ -40,6 +40,17 @@ class CompanionService : public QObject {
     /// started.
     void stop();
 
+  public slots:
+    /// Run a library search on the main thread and return SearchResult JSON.
+    /// Invoked by CompanionServer via BlockingQueuedConnection. `q` uses Mixxx's
+    /// native search grammar; bpmMin/bpmMax<=0 mean "no bound".
+    QByteArray runLibrarySearch(const QString& q,
+            int bpmMin,
+            int bpmMax,
+            const QString& key,
+            int limit,
+            int offset);
+
   signals:
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
     void deckUnloadedEvent(int deck, quint64 generation);
