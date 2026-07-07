@@ -5,6 +5,7 @@
 #include <QThread>
 #include <QTimer>
 
+#include <QDataStream>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -15,16 +16,41 @@
 #include "companion/companionserver.h"
 #include "companion/companionsettings.h"
 #include "companion/trackserializer.h"
+#include "library/dao/analysisdao.h"
 #include "library/searchquery.h"
 #include "library/searchqueryparser.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
+#include "track/cue.h"
 #include "track/track.h"
 #include "track/trackid.h"
 #include "util/assert.h"
+#include "util/color/rgbcolor.h"
 #include "util/logger.h"
+#include "waveform/waveform.h"
+#include "waveform/waveformfactory.h"
+
+namespace {
+QString cueTypeString(mixxx::CueType type) {
+    switch (type) {
+    case mixxx::CueType::HotCue:
+        return QStringLiteral("hotcue");
+    case mixxx::CueType::MainCue:
+        return QStringLiteral("maincue");
+    case mixxx::CueType::Loop:
+        return QStringLiteral("loop");
+    case mixxx::CueType::Intro:
+        return QStringLiteral("intro");
+    case mixxx::CueType::Outro:
+        return QStringLiteral("outro");
+    default:
+        // Invalid/Beat/Jump/N60dBSound are not exposed to companion clients.
+        return QString();
+    }
+}
+} // namespace
 
 namespace {
 const mixxx::Logger kLogger("Companion");
@@ -338,6 +364,150 @@ QByteArray CompanionService::runLibrarySearch(const QString& q,
     result.insert(QStringLiteral("total"), total);
     result.insert(QStringLiteral("tracks"), tracks);
     return QJsonDocument(result).toJson(QJsonDocument::Compact);
+}
+
+QByteArray CompanionService::getTrackJson(int trackId) {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
+    if (!id.isValid()) {
+        return QByteArray();
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (!pTrack) {
+        return QByteArray();
+    }
+    const CompanionSettings settings(m_pConfig);
+    const QJsonObject dto = serializeTrack(pTrack, settings.exposeFilePaths());
+    return QJsonDocument(dto).toJson(QJsonDocument::Compact);
+}
+
+QByteArray CompanionService::getTrackCues(int trackId) {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
+    if (!id.isValid()) {
+        return QByteArray();
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (!pTrack) {
+        return QByteArray();
+    }
+    const double sampleRate = pTrack->getSampleRate().value();
+
+    QJsonArray cues;
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const CuePointer& pCue : cuePoints) {
+        if (!pCue) {
+            continue;
+        }
+        const QString type = cueTypeString(pCue->getType());
+        if (type.isEmpty()) {
+            continue;
+        }
+        QJsonObject cue;
+        cue.insert(QStringLiteral("type"), type);
+        const mixxx::audio::FramePos position = pCue->getPosition();
+        if (position.isValid() && sampleRate > 0.0) {
+            cue.insert(QStringLiteral("positionSeconds"),
+                    position.value() / sampleRate);
+            const mixxx::audio::FramePos endPosition = pCue->getEndPosition();
+            if (endPosition.isValid()) {
+                cue.insert(QStringLiteral("lengthSeconds"),
+                        (endPosition.value() - position.value()) / sampleRate);
+            }
+        }
+        const int hotcue = pCue->getHotCue();
+        if (hotcue >= 0) {
+            cue.insert(QStringLiteral("index"), hotcue);
+        }
+        const QString label = pCue->getLabel();
+        if (!label.isEmpty()) {
+            cue.insert(QStringLiteral("label"), label);
+        }
+        cue.insert(QStringLiteral("color"),
+                mixxx::RgbColor::toQString(pCue->getColor()));
+        cues.append(cue);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("trackId"), trackId);
+    root.insert(QStringLiteral("cues"), cues);
+    return QJsonDocument(root).toJson(QJsonDocument::Compact);
+}
+
+QByteArray CompanionService::exportWaveformSummary(int trackId) {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
+    if (!id.isValid()) {
+        return QByteArray();
+    }
+    TrackCollection* pCollection = m_pTrackCollectionManager->internalCollection();
+
+    // Read the stored summary waveform straight from AnalysisDao (works for any
+    // analyzed library track, loaded or not). Reuses the collection's
+    // main-thread DB connection.
+    AnalysisDao analysisDao(m_pConfig);
+    analysisDao.initialize(pCollection->database());
+    const QList<AnalysisDao::AnalysisInfo> analyses =
+            analysisDao.getAnalysesForTrackByType(
+                    id, AnalysisDao::AnalysisType::TYPE_WAVESUMMARY);
+    if (analyses.isEmpty()) {
+        return QByteArray(); // -> 202 analysis_pending
+    }
+    const ConstWaveformPointer pWaveform(
+            WaveformFactory::loadWaveformFromAnalysis(analyses.first()));
+    if (!pWaveform || pWaveform->getDataSize() <= 0) {
+        return QByteArray();
+    }
+
+    // getDataSize() counts interleaved L/R entries (even=Left, odd=Right), so
+    // the number of visual frames is half that.
+    const int dataSize = pWaveform->getDataSize();
+    const int frames = dataSize / 2;
+
+    double durationSeconds = 0.0;
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (pTrack) {
+        durationSeconds = pTrack->getDuration();
+    }
+
+    // MXWF v1: 32-byte header + frames*4 bytes (all,low,mid,high; L/R max-mixed).
+    QByteArray blob;
+    QDataStream ds(&blob, QIODevice::WriteOnly);
+    ds.setByteOrder(QDataStream::LittleEndian);
+    ds.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    ds.writeRawData("MXWF", 4);
+    ds << static_cast<quint16>(1); // version
+    ds << static_cast<quint16>(0); // flags (0 = mono-mixed)
+    ds << static_cast<quint32>(trackId);
+    ds << static_cast<float>(durationSeconds);
+    ds << static_cast<quint32>(frames); // sampleCount (visual frames)
+    ds << static_cast<quint8>(1);       // channels (mono-mixed)
+    ds << static_cast<quint8>(4);       // bands: all, low, mid, high
+    ds << static_cast<quint16>(0);      // reserved
+    ds << static_cast<quint64>(0);      // reserved
+
+    for (int f = 0; f < frames; ++f) {
+        const int l = 2 * f;
+        const int r = l + 1;
+        ds << static_cast<quint8>(
+                qMax(pWaveform->getAll(l), pWaveform->getAll(r)));
+        ds << static_cast<quint8>(
+                qMax(pWaveform->getLow(l), pWaveform->getLow(r)));
+        ds << static_cast<quint8>(
+                qMax(pWaveform->getMid(l), pWaveform->getMid(r)));
+        ds << static_cast<quint8>(
+                qMax(pWaveform->getHigh(l), pWaveform->getHigh(r)));
+    }
+    return blob;
 }
 
 void CompanionService::onLoadToDeckRequested(int deck, int trackId, bool play) {

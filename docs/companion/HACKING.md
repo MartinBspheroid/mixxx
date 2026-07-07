@@ -63,6 +63,16 @@ websocat ws://127.0.0.1:24742/ws/v1
 curl -s "http://127.0.0.1:24742/v1/library/search?q=bicep&limit=5" | jq
 curl -s "http://127.0.0.1:24742/v1/library/search?q=bpm:120-128&bpmMin=124&key=8A" | jq
 
+# Deck snapshots (HTTP; live updates come over /ws/v1)
+curl -s http://127.0.0.1:24742/v1/decks | jq
+curl -s http://127.0.0.1:24742/v1/decks/1 | jq
+
+# Track detail, cues, and waveform (T09)
+curl -s http://127.0.0.1:24742/v1/tracks/1 | jq
+curl -s http://127.0.0.1:24742/v1/tracks/1/cues | jq
+#   waveform is a binary MXWF blob (or 202 {"error":{"code":"analysis_pending"}})
+curl -s http://127.0.0.1:24742/v1/tracks/1/waveform/summary -o wf.bin && xxd wf.bin | head
+
 # Unknown route -> 404 JSON error
 curl -s -i http://127.0.0.1:24742/v1/nope
 

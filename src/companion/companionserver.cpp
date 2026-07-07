@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QStringList>
 #include <QTcpServer>
@@ -283,10 +284,54 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
             request.path == QLatin1String("/v1/library/search")) {
         return handleSearch(request);
     }
+    if (request.method == "GET" &&
+            request.path == QLatin1String("/v1/decks")) {
+        return handleDecks();
+    }
 
-    // POST /v1/decks/:deck/:action
     const QStringList segments =
             request.path.split('/', Qt::SkipEmptyParts);
+
+    // GET /v1/decks/:deck
+    if (request.method == "GET" && segments.size() == 3 &&
+            segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("decks")) {
+        bool deckOk = false;
+        const int deck = segments.at(2).toInt(&deckOk);
+        if (!deckOk) {
+            return HttpResponse::error(400, "bad_request", "invalid deck");
+        }
+        if (!isValidDeck(deck)) {
+            return HttpResponse::error(404, "not_found", "no such deck");
+        }
+        return HttpResponse::json(200,
+                QJsonDocument(deckStateJson(deck)).toJson(QJsonDocument::Compact));
+    }
+
+    // GET /v1/tracks/:id  |  /v1/tracks/:id/cues  |  /v1/tracks/:id/waveform/summary
+    if (request.method == "GET" && segments.size() >= 3 &&
+            segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("tracks")) {
+        bool idOk = false;
+        const int trackId = segments.at(2).toInt(&idOk);
+        if (!idOk) {
+            return HttpResponse::error(400, "bad_request", "invalid track id");
+        }
+        if (segments.size() == 3) {
+            return handleTrack(trackId);
+        }
+        if (segments.size() == 4 && segments.at(3) == QLatin1String("cues")) {
+            return handleTrackCues(trackId);
+        }
+        if (segments.size() == 5 &&
+                segments.at(3) == QLatin1String("waveform") &&
+                segments.at(4) == QLatin1String("summary")) {
+            return handleWaveformSummary(trackId);
+        }
+        return HttpResponse::error(404, "not_found");
+    }
+
+    // POST /v1/decks/:deck/:action
     if (request.method == "POST" && segments.size() == 4 &&
             segments.at(0) == QLatin1String("v1") &&
             segments.at(1) == QLatin1String("decks")) {
@@ -306,6 +351,108 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
 
 bool CompanionServer::isValidDeck(int deck) const {
     return deck >= 1 && deck <= m_numDecks;
+}
+
+QJsonObject CompanionServer::deckStateJson(int deck) const {
+    QJsonObject dto;
+    dto.insert(QStringLiteral("deck"), deck);
+    const auto it = m_deckSnapshots.constFind(deck);
+    if (it == m_deckSnapshots.constEnd()) {
+        dto.insert(QStringLiteral("generation"), 0);
+        dto.insert(QStringLiteral("playing"), false);
+        return dto;
+    }
+    dto.insert(QStringLiteral("generation"), static_cast<qint64>(it->generation));
+    if (it->loaded && it->loadedEvent.contains(QStringLiteral("track"))) {
+        dto.insert(QStringLiteral("track"),
+                it->loadedEvent.value(QStringLiteral("track")));
+    }
+    // Merge the latest tick fields (present within one tick interval of load).
+    const QJsonObject& tick = it->lastTick;
+    dto.insert(QStringLiteral("playposition"),
+            tick.value(QStringLiteral("playposition")).toDouble(0.0));
+    dto.insert(QStringLiteral("positionSeconds"),
+            tick.value(QStringLiteral("positionSeconds")).toDouble(0.0));
+    dto.insert(QStringLiteral("durationSeconds"),
+            tick.value(QStringLiteral("durationSeconds")).toDouble(0.0));
+    dto.insert(QStringLiteral("rate"),
+            tick.value(QStringLiteral("rate")).toDouble(0.0));
+    dto.insert(QStringLiteral("playing"),
+            tick.value(QStringLiteral("playing")).toBool(false));
+    dto.insert(QStringLiteral("vu"), tick.value(QStringLiteral("vu")).toDouble(0.0));
+    return dto;
+}
+
+HttpResponse CompanionServer::handleDecks() {
+    QJsonArray decks;
+    for (int deck = 1; deck <= m_numDecks; ++deck) {
+        decks.append(deckStateJson(deck));
+    }
+    return HttpResponse::json(
+            200, QJsonDocument(decks).toJson(QJsonDocument::Compact));
+}
+
+HttpResponse CompanionServer::handleTrack(int trackId) {
+    if (!m_pQueryHandler) {
+        return HttpResponse::error(500, "internal", "no query handler");
+    }
+    QByteArray json;
+    const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+            "getTrackJson",
+            Qt::BlockingQueuedConnection,
+            Q_RETURN_ARG(QByteArray, json),
+            Q_ARG(int, trackId));
+    if (!ok) {
+        return HttpResponse::error(500, "internal", "track lookup failed");
+    }
+    if (json.isEmpty()) {
+        return HttpResponse::error(404, "not_found", "no such track");
+    }
+    return HttpResponse::json(200, json);
+}
+
+HttpResponse CompanionServer::handleTrackCues(int trackId) {
+    if (!m_pQueryHandler) {
+        return HttpResponse::error(500, "internal", "no query handler");
+    }
+    QByteArray json;
+    const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+            "getTrackCues",
+            Qt::BlockingQueuedConnection,
+            Q_RETURN_ARG(QByteArray, json),
+            Q_ARG(int, trackId));
+    if (!ok) {
+        return HttpResponse::error(500, "internal", "cue lookup failed");
+    }
+    if (json.isEmpty()) {
+        return HttpResponse::error(404, "not_found", "no such track");
+    }
+    return HttpResponse::json(200, json);
+}
+
+HttpResponse CompanionServer::handleWaveformSummary(int trackId) {
+    if (!m_pQueryHandler) {
+        return HttpResponse::error(500, "internal", "no query handler");
+    }
+    QByteArray blob;
+    const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+            "exportWaveformSummary",
+            Qt::BlockingQueuedConnection,
+            Q_RETURN_ARG(QByteArray, blob),
+            Q_ARG(int, trackId));
+    if (!ok) {
+        return HttpResponse::error(500, "internal", "waveform export failed");
+    }
+    if (blob.isEmpty()) {
+        // No completed summary waveform available (track unknown or still being
+        // analyzed). The client retries after the next deck.loaded or a backoff.
+        return HttpResponse::error(202, "analysis_pending");
+    }
+    HttpResponse response;
+    response.status = 200;
+    response.contentType = "application/octet-stream";
+    response.body = blob;
+    return response;
 }
 
 HttpResponse CompanionServer::handleSearch(const HttpRequest& request) {

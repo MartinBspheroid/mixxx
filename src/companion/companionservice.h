@@ -50,6 +50,13 @@ class CompanionService : public QObject {
             const QString& key,
             int limit,
             int offset);
+    /// Serialize a single library track to TrackDto JSON (empty if not found).
+    QByteArray getTrackJson(int trackId);
+    /// Serialize a track's cue points to JSON (empty if track not found).
+    QByteArray getTrackCues(int trackId);
+    /// Export a track's summary waveform as an MXWF v1 blob (empty if the
+    /// completed summary is unavailable). All main thread.
+    QByteArray exportWaveformSummary(int trackId);
 
   signals:
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);

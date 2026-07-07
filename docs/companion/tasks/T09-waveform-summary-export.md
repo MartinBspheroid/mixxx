@@ -63,3 +63,43 @@ Summary waveform: 2×1920 = 3840 samples, bands all/low/mid/high as uint8
 Main (441 samples/s) waveform export (future `/waveform/main`, format reserved),
 stem bands, beatgrid endpoint (follow-up — note it in the completion report),
 any server-side rendering.
+
+---
+
+## Completion note (implemented, builds + endpoints runtime-verified)
+
+Implemented `GET /v1/tracks/:id/waveform/summary` (MXWF v1 binary),
+`GET /v1/tracks/:id/cues`, and `GET /v1/tracks/:id` (the T05-deferred detail
+endpoint). All go through the worker HTTP handler -> BlockingQueuedConnection ->
+main-thread `CompanionService` slots (`exportWaveformSummary`, `getTrackCues`,
+`getTrackJson`). Also added the `GET /v1/decks` and `GET /v1/decks/:deck` snapshot
+routes (assembled from the server's per-deck snapshots on the worker thread).
+
+Waveform source: `AnalysisDao::getAnalysesForTrackByType(id, TYPE_WAVESUMMARY)` +
+`WaveformFactory::loadWaveformFromAnalysis` (works for any analyzed library track,
+loaded or not). MXWF encoding: 32-byte little-endian header + frames*4 bytes
+(`getDataSize()/2` visual frames; per band all/low/mid/high; L/R max-mixed —
+even index = Left, odd = Right, confirmed from the renderer). Empty result ->
+202 analysis_pending.
+
+Cue schema: `{trackId, cues:[{type, positionSeconds?, lengthSeconds?, index?,
+label?, color}]}` where type in hotcue/maincue/loop/intro/outro (Invalid/Beat/
+Jump/N60dBSound filtered out). FramePos->seconds via `pos.value()/getSampleRate()`.
+
+### Runtime verification (Ubuntu 24.04, headless offscreen, real Mixxx)
+Scanned a generated WAV into the library and hit the live service:
+- search returned the real track; `/v1/decks`, `/v1/decks/:deck` correct structure;
+  `/v1/tracks/:id/cues` valid JSON; `/v1/tracks/:id/waveform/summary` correctly
+  returned 202 analysis_pending; unknown-id -> 404. Clean SIGTERM shutdown.
+- Also caught a real gotcha: a leftover Node mock server from Android testing was
+  holding port 24742; real Mixxx correctly logged the bind failure and degraded
+  without crashing (graceful-failure path confirmed).
+
+### NOT fully verified (headless limitation)
+The actual MXWF blob bytes with real waveform data could not be produced: headless
+has no audio device, so the engine audio callback never runs, so a deck load never
+completes, so track analysis never triggers (waveform stays pending). The blob
+encoding is verified by compilation + correct API usage against real headers, but
+needs a real Mixxx session (with audio, or an analyzed library) to exercise the
+non-empty path. Follow-up: verify on macOS (T11) with an analyzed track, or add a
+GoogleTest that feeds a synthetic Waveform through the encoder.

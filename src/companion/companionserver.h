@@ -80,6 +80,11 @@ class CompanionServer : public QObject {
   private:
     HttpResponse route(const HttpRequest& request);
     HttpResponse handleStatus();
+    HttpResponse handleDecks();
+    QJsonObject deckStateJson(int deck) const;
+    HttpResponse handleTrack(int trackId);
+    HttpResponse handleTrackCues(int trackId);
+    HttpResponse handleWaveformSummary(int trackId);
     HttpResponse handleSearch(const HttpRequest& request);
     HttpResponse handleDeckAction(
             int deck, const QByteArray& action, const HttpRequest& request);
