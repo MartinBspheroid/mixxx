@@ -61,6 +61,15 @@ websocat ws://127.0.0.1:24742/ws/v1
 
 # Unknown route -> 404 JSON error
 curl -s -i http://127.0.0.1:24742/v1/nope
+
+# Remote actions (T07) — "call functions from the phone"
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/play
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/pause
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/cue
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/sync
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/seek -d '{"position":0.25}'
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/load -d '{"trackId":123,"play":false}'
+#   load is fire-and-forget (202); watch /ws/v1 for the deck.loaded confirmation
 ```
 
 No `websocat`? A three-line Node or Python client works too — see

@@ -761,6 +761,7 @@ void CoreServices::initialize(QApplication* pApp) {
     m_pCompanionService = std::make_unique<companion::CompanionService>(
             pConfig,
             m_pPlayerManager.get(),
+            m_pTrackCollectionManager.get(),
             VersionStore::version());
     m_pCompanionService->start();
 #endif

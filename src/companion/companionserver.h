@@ -59,6 +59,9 @@ class CompanionServer : public QObject {
     void listening(quint16 port);
     /// Emitted after shutdown() completes.
     void stopped();
+    /// A client asked to load a library track to a deck. Handled on the main
+    /// thread by CompanionService (track lookup + PlayerManager).
+    void loadToDeckRequested(int deck, int trackId, bool play);
 
   private slots:
     void onNewConnection();
@@ -72,6 +75,9 @@ class CompanionServer : public QObject {
   private:
     HttpResponse route(const HttpRequest& request);
     HttpResponse handleStatus();
+    HttpResponse handleDeckAction(
+            int deck, const QByteArray& action, const HttpRequest& request);
+    bool isValidDeck(int deck) const;
     void sendReplay(QWebSocket* pClient);
     void broadcast(const QJsonObject& event);
     qint64 serverTimeMs() const;

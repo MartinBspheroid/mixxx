@@ -6,8 +6,11 @@
 #include "companion/companionserver.h"
 #include "companion/companionsettings.h"
 #include "companion/trackserializer.h"
+#include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
+#include "track/track.h"
+#include "track/trackid.h"
 #include "util/assert.h"
 #include "util/logger.h"
 
@@ -20,11 +23,13 @@ namespace companion {
 
 CompanionService::CompanionService(UserSettingsPointer pConfig,
         PlayerManager* pPlayerManager,
+        TrackCollectionManager* pTrackCollectionManager,
         QString appVersion,
         QObject* parent)
         : QObject(parent),
           m_pConfig(std::move(pConfig)),
           m_pPlayerManager(pPlayerManager),
+          m_pTrackCollectionManager(pTrackCollectionManager),
           m_appVersion(std::move(appVersion)),
           m_pThread(nullptr),
           m_pServer(nullptr),
@@ -73,6 +78,11 @@ void CompanionService::start() {
             &CompanionService::numberOfDecksChangedEvent,
             m_pServer,
             &CompanionServer::onNumberOfDecksChanged);
+    // Actions flow the other way: server (worker) -> service (main thread).
+    connect(m_pServer,
+            &CompanionServer::loadToDeckRequested,
+            this,
+            &CompanionService::onLoadToDeckRequested);
 
     m_pThread->start();
     // Create sockets and listeners on the worker thread once its event loop runs.
@@ -152,6 +162,27 @@ void CompanionService::onNumberOfDecksChanged(int numDecks) {
         m_connectedDecks = numDecks;
     }
     emit numberOfDecksChangedEvent(numDecks);
+}
+
+void CompanionService::onLoadToDeckRequested(int deck, int trackId, bool play) {
+    // Runs on the main thread: DAO lookup + PlayerManager access are main-thread
+    // only. Deck validity was checked on the server against numberOfDecks().
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager && m_pPlayerManager) {
+        return;
+    }
+    const TrackId id(QVariant(trackId));
+    if (!id.isValid()) {
+        kLogger.warning() << "load: invalid track id" << trackId;
+        return;
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (!pTrack) {
+        kLogger.warning() << "load: no track with id" << trackId;
+        return;
+    }
+    m_pPlayerManager->slotLoadLocationToPlayer(
+            pTrack->getLocation(), PlayerManager::groupForDeck(deck - 1), play);
+    kLogger.debug() << "load: track" << trackId << "-> deck" << deck;
 }
 
 } // namespace companion

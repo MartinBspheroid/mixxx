@@ -9,6 +9,7 @@
 #include "track/track_decl.h"
 
 class PlayerManager;
+class TrackCollectionManager;
 class QThread;
 
 namespace mixxx {
@@ -28,6 +29,7 @@ class CompanionService : public QObject {
   public:
     CompanionService(UserSettingsPointer pConfig,
             PlayerManager* pPlayerManager,
+            TrackCollectionManager* pTrackCollectionManager,
             QString appVersion,
             QObject* parent = nullptr);
     ~CompanionService() override;
@@ -48,9 +50,11 @@ class CompanionService : public QObject {
     void onDeckLoaded(int deckIndex, const TrackPointer& pTrack);
     void onDeckUnloaded(int deckIndex);
     void onNumberOfDecksChanged(int numDecks);
+    void onLoadToDeckRequested(int deck, int trackId, bool play);
 
     UserSettingsPointer m_pConfig;
     PlayerManager* m_pPlayerManager;
+    TrackCollectionManager* m_pTrackCollectionManager;
     const QString m_appVersion;
 
     QThread* m_pThread;

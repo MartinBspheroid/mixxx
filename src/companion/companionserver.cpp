@@ -3,6 +3,7 @@
 #include <utility>
 
 #include <QJsonDocument>
+#include <QStringList>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QWebSocket>
@@ -11,6 +12,9 @@
 #include "companion/companiondefs.h"
 #include "companion/deckstatepublisher.h"
 #include "companion/httpconnection.h"
+#include "control/controlobject.h"
+#include "mixer/playermanager.h"
+#include "preferences/configobject.h"
 #include "util/logger.h"
 
 namespace {
@@ -272,7 +276,93 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
     if (request.method == "GET" && request.path == QLatin1String("/v1/status")) {
         return handleStatus();
     }
+
+    // POST /v1/decks/:deck/:action
+    const QStringList segments =
+            request.path.split('/', Qt::SkipEmptyParts);
+    if (request.method == "POST" && segments.size() == 4 &&
+            segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("decks")) {
+        bool deckOk = false;
+        const int deck = segments.at(2).toInt(&deckOk);
+        if (!deckOk) {
+            return HttpResponse::error(400, "bad_request", "invalid deck");
+        }
+        if (!isValidDeck(deck)) {
+            return HttpResponse::error(404, "not_found", "no such deck");
+        }
+        return handleDeckAction(deck, segments.at(3).toUtf8(), request);
+    }
+
     return HttpResponse::error(404, "not_found");
+}
+
+bool CompanionServer::isValidDeck(int deck) const {
+    return deck >= 1 && deck <= m_numDecks;
+}
+
+HttpResponse CompanionServer::handleDeckAction(
+        int deck, const QByteArray& action, const HttpRequest& request) {
+    const QString group = PlayerManager::groupForDeck(deck - 1);
+
+    // Transport controls are thread-safe via the control system and run
+    // directly on this (worker) thread.
+    if (action == "play") {
+        ControlObject::set(ConfigKey(group, QStringLiteral("play")), 1.0);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == "pause") {
+        ControlObject::set(ConfigKey(group, QStringLiteral("play")), 0.0);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == "cue") {
+        // Momentary press+release; in the default cue mode this jumps to the
+        // cue point.
+        ControlObject::set(ConfigKey(group, QStringLiteral("cue_default")), 1.0);
+        ControlObject::set(ConfigKey(group, QStringLiteral("cue_default")), 0.0);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == "sync") {
+        ControlObject::set(ConfigKey(group, QStringLiteral("beatsync")), 1.0);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == "seek") {
+        const QJsonObject body =
+                QJsonDocument::fromJson(request.body).object();
+        if (!body.contains(QStringLiteral("position"))) {
+            return HttpResponse::error(400, "bad_request", "position required");
+        }
+        const double position = body.value(QStringLiteral("position")).toDouble();
+        if (position < 0.0 || position > 1.0) {
+            return HttpResponse::error(
+                    400, "bad_request", "position must be 0..1");
+        }
+        const bool playing =
+                ControlObject::get(ConfigKey(group, QStringLiteral("play"))) != 0.0;
+        const bool force = body.value(QStringLiteral("force")).toBool();
+        if (playing && !force) {
+            return HttpResponse::error(
+                    409, "action_not_allowed", "deck is playing; pass force");
+        }
+        ControlObject::set(
+                ConfigKey(group, QStringLiteral("playposition")), position);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == "load") {
+        const QJsonObject body =
+                QJsonDocument::fromJson(request.body).object();
+        if (!body.contains(QStringLiteral("trackId"))) {
+            return HttpResponse::error(400, "bad_request", "trackId required");
+        }
+        const int trackId = body.value(QStringLiteral("trackId")).toInt();
+        const bool play = body.value(QStringLiteral("play")).toBool();
+        // Track lookup + load happen on the main thread; fire-and-forget. The
+        // resulting deck.loaded event confirms success to the client.
+        emit loadToDeckRequested(deck, trackId, play);
+        return HttpResponse::json(202, "{\"ok\":true,\"status\":\"loading\"}");
+    }
+
+    return HttpResponse::error(403, "action_not_allowed", "unknown action");
 }
 
 HttpResponse CompanionServer::handleStatus() {

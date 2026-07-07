@@ -62,3 +62,32 @@ from the phone" goal.
 
 Volume/EQ/FX/crossfader (deliberately excluded), hotcue triggering (Phase 3
 decision), generic control endpoint (never in v1).
+
+---
+
+## Completion note (partial — implemented, pending build verification)
+
+Implemented in `companionserver.cpp` (route + handleDeckAction) and
+`companionservice.cpp` (onLoadToDeckRequested):
+- `POST /v1/decks/:deck/{play,pause,cue,sync,seek}` — transport controls run
+  directly on the worker thread via the thread-safe `ControlObject::set()`
+  (play/pause -> `play`; cue -> `cue_default` press+release; sync -> `beatsync`;
+  seek -> `playposition`, 0..1, refused while playing unless `{"force":true}` -> 409).
+- `POST /v1/decks/:deck/load {trackId, play}` — emitted as a queued signal to the
+  main-thread service, which resolves the id via `TrackCollectionManager::getTrackById`
+  (note: `DbId(int)` is deleted, so `TrackId(QVariant(trackId))`) and calls
+  `PlayerManager::slotLoadLocationToPlayer(location, group, play)`.
+- Deck index validated against `numberOfDecks()`; unknown action -> 403.
+- `TrackCollectionManager*` threaded into `CompanionService` ctor + CoreServices.
+
+Deviations from the plan:
+- **load is fire-and-forget (202)** rather than synchronous 404-on-unknown-track.
+  Doing a synchronous lookup would need a worker->main blocking call, which risks a
+  shutdown deadlock (main blocks in finalize while worker blocks on main). The
+  `deck.loaded` event is the load confirmation; unknown ids are logged. Revisit if a
+  synchronous result is required (would need async HTTP responses in HttpConnection).
+- **`POST /v1/autodj/queue` not yet implemented** — needs PlaylistDAO Auto DJ
+  playlist access on the main thread; deferred to a later pass.
+
+Remaining T07 acceptance items (manual load->play from a phone, guards) are verified
+under T11.
