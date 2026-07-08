@@ -91,3 +91,11 @@ Deviations from the plan:
 
 Remaining T07 acceptance items (manual load->play from a phone, guards) are verified
 under T11.
+
+## Update (autodj/queue now implemented)
+
+`POST /v1/autodj/queue {trackId}` is implemented: server emits `autoDjQueueRequested`,
+main-thread `CompanionService::onAutoDjQueueRequested` resolves the track via
+`TrackCollectionManager::getTrackById` and appends to the Auto DJ playlist via
+`TrackCollection::getPlaylistDAO().appendTrackToPlaylist(id, getPlaylistIdFromName(AUTODJ_TABLE))`.
+Fire-and-forget 202; goes through the T08 auth gate (write scope). Builds clean.

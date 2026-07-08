@@ -365,6 +365,17 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
         return HttpResponse::error(404, "not_found");
     }
 
+    // POST /v1/autodj/queue
+    if (request.method == "POST" &&
+            request.path == QLatin1String("/v1/autodj/queue")) {
+        const QJsonObject body = QJsonDocument::fromJson(request.body).object();
+        if (!body.contains(QStringLiteral("trackId"))) {
+            return HttpResponse::error(400, "bad_request", "trackId required");
+        }
+        emit autoDjQueueRequested(body.value(QStringLiteral("trackId")).toInt());
+        return HttpResponse::json(202, "{\"ok\":true,\"status\":\"queued\"}");
+    }
+
     // POST /v1/decks/:deck/:action
     if (request.method == "POST" && segments.size() == 4 &&
             segments.at(0) == QLatin1String("v1") &&

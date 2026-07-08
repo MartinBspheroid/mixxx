@@ -53,3 +53,20 @@ scratch), offline library, Wear OS/widgets (later-features list lives in
 - [ ] Golden MXWF fixture + both decoder snippets round-trip.
 - [ ] Android repo bootstrapped with the plan above as its README; HUD screen
       showing live song info from a real Mixxx session is the app's own MVP gate.
+
+---
+
+## Completion note (CLIENT.md written; Android app built separately)
+
+`docs/companion/CLIENT.md` written — the complete outward-facing contract: connect +
+pairing/auth, error shapes, full HTTP endpoint table, `/ws/v1` events with the
+generation-discipline + local-extrapolation rendering contract, search grammar, the
+MXWF binary format with **tested TypeScript and Kotlin reference decoders**, and a
+minimal client flow. Written against the fully-implemented API (T01-T09 + T08 auth +
+autodj/queue).
+
+The Android HUD reference client is built and verified in the sibling
+`android-app-mixxx/` repo (Kotlin + Compose): Connect / Library / Live HUD screens,
+OkHttp WS with reconnect + generation discipline, frame-clock playhead extrapolation,
+and real MXWF waveform decoding (its `MxwfDecoder.kt` matches the CLIENT.md Kotlin
+snippet). That app is outside the Mixxx fork's git; only the contract lives here.

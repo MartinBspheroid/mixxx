@@ -18,6 +18,8 @@
 #include "companion/trackserializer.h"
 #include "companion/waveformmxwf.h"
 #include "library/dao/analysisdao.h"
+#include "library/dao/playlistdao.h"
+#include "library/dao/trackschema.h"
 #include "library/searchquery.h"
 #include "library/searchqueryparser.h"
 #include "library/trackcollection.h"
@@ -124,6 +126,10 @@ void CompanionService::start() {
             &CompanionServer::loadToDeckRequested,
             this,
             &CompanionService::onLoadToDeckRequested);
+    connect(m_pServer,
+            &CompanionServer::autoDjQueueRequested,
+            this,
+            &CompanionService::onAutoDjQueueRequested);
     connect(m_pServer,
             &CompanionServer::persistTokens,
             this,
@@ -481,6 +487,32 @@ QByteArray CompanionService::exportWaveformSummary(int trackId) {
     }
     return encodeWaveformSummaryMxwf(
             static_cast<quint32>(trackId), *pWaveform, durationSeconds);
+}
+
+void CompanionService::onAutoDjQueueRequested(int trackId) {
+    // Runs on the main thread (DAO access).
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return;
+    }
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
+    if (!id.isValid()) {
+        return;
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (!pTrack) {
+        kLogger.warning() << "autodj queue: no track with id" << trackId;
+        return;
+    }
+    PlaylistDAO& playlistDao =
+            m_pTrackCollectionManager->internalCollection()->getPlaylistDAO();
+    const int autoDjId = playlistDao.getPlaylistIdFromName(AUTODJ_TABLE);
+    if (autoDjId < 0) {
+        kLogger.warning() << "autodj queue: no Auto DJ playlist";
+        return;
+    }
+    playlistDao.appendTrackToPlaylist(id, autoDjId);
+    kLogger.debug() << "autodj queue: appended track" << trackId;
 }
 
 void CompanionService::onPersistTokens(const QString& tokensJson) {

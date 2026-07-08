@@ -71,6 +71,8 @@ class CompanionServer : public QObject {
     /// A client asked to load a library track to a deck. Handled on the main
     /// thread by CompanionService (track lookup + PlayerManager).
     void loadToDeckRequested(int deck, int trackId, bool play);
+    /// A client asked to append a library track to the Auto DJ queue.
+    void autoDjQueueRequested(int trackId);
     /// The paired-token set changed; the JSON should be persisted to settings on
     /// the main thread.
     void persistTokens(const QString& tokensJson);
