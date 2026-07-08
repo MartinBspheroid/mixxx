@@ -48,3 +48,20 @@ long-term goal of a headless Pi Mixxx rig driven from the phone.
 - [ ] Pi: Mixxx runs, service reachable from phone, 2-deck playback + ticking
       client without audio dropouts; recipe reproducible from BUILD-RASPI.md.
 - [ ] Zero platform `#ifdef`s introduced in `src/companion/`.
+
+---
+
+## Completion note (Linux CI added; RasPi documented as follow-up)
+
+`.github/workflows/companion.yml` added to the fork: two ubuntu-24.04 jobs on
+push/PR to `companion-api` —
+1. **COMPANION_API=ON**: deps via `tools/debian_buildenv.sh setup` + `qt6-websockets-dev`,
+   ccache-cached, configure + build `mixxx-test`, run `--gtest_filter='Companion*'`.
+2. **COMPANION_API=OFF**: configure + build `mixxx-lib` (compiles every guarded TU
+   like `coreservices.cpp` without `__COMPANION__`, proving the guards).
+
+Uses the exact dep set + cmake flags verified to build locally (Ubuntu 24.04, Qt 6.4);
+YAML validated. First GitHub run may need minor tuning (runner package names, cache
+warm-up). Raspberry Pi (aarch64) native build recipe remains a documented follow-up
+(`BUILD-RASPI.md`) — the CI proves x86_64 Linux; the companion code is Qt-only with no
+platform `#ifdef`s, so RasPi is a packaging exercise, not a code one.

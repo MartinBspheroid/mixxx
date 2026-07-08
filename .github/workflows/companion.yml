@@ -1,0 +1,95 @@
+# CI for the Companion API fork feature. Keeps the companion build green and its
+# unit tests passing as the branch tracks upstream 2.6, and verifies the
+# COMPANION_API=OFF path still builds a stock Mixxx (guards correct).
+#
+# Note: the first run on GitHub may need minor tuning (runner package names,
+# build time). ccache is cached between runs so repeats are fast.
+name: Companion API CI
+
+on:
+  push:
+    branches: [companion-api]
+  pull_request:
+    branches: [companion-api]
+  workflow_dispatch:
+
+concurrency:
+  group: companion-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: "2G"
+
+jobs:
+  build-and-test:
+    name: "COMPANION_API=ON — build + unit tests"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Mixxx build dependencies
+        run: |
+          tools/debian_buildenv.sh setup
+          sudo apt-get install -y --no-install-recommends \
+            qt6-websockets-dev ninja-build ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: companion-on-ccache-${{ github.sha }}
+          restore-keys: companion-on-ccache-
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCOMPANION_API=ON
+          -DWARNINGS_FATAL=OFF
+          -DDEBUG_ASSERTIONS_FATAL=OFF
+          -DDOWNLOAD_MANUAL=OFF
+          -DKEYFINDER=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build test binary
+        run: cmake --build build --target mixxx-test
+
+      - name: Run companion unit tests
+        run: QT_QPA_PLATFORM=offscreen ./build/mixxx-test --gtest_filter='Companion*'
+
+  build-off:
+    name: "COMPANION_API=OFF — stock build still compiles"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Mixxx build dependencies
+        run: |
+          tools/debian_buildenv.sh setup
+          sudo apt-get install -y --no-install-recommends ninja-build ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: companion-off-ccache-${{ github.sha }}
+          restore-keys: companion-off-ccache-
+
+      - name: Configure (companion disabled)
+        run: >
+          cmake -S . -B build-off -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCOMPANION_API=OFF
+          -DWARNINGS_FATAL=OFF
+          -DDOWNLOAD_MANUAL=OFF
+          -DKEYFINDER=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # Building mixxx-lib compiles every guarded translation unit
+      # (e.g. coreservices.cpp) without __COMPANION__, proving the #ifdef guards
+      # exclude companion code cleanly.
+      - name: Build mixxx-lib (no companion sources)
+        run: cmake --build build-off --target mixxx-lib
