@@ -4979,13 +4979,22 @@ if(COMPANION_API)
     mixxx-lib
     PRIVATE
       src/companion/companionservice.cpp
+      src/companion/companionservice.h
       src/companion/companionsettings.cpp
+      src/companion/companionsettings.h
       src/companion/companionserver.cpp
+      src/companion/companionserver.h
+      src/companion/companiondefs.h
       src/companion/httpconnection.cpp
+      src/companion/httpconnection.h
       src/companion/deckstatepublisher.cpp
+      src/companion/deckstatepublisher.h
       src/companion/pairingmanager.cpp
+      src/companion/pairingmanager.h
       src/companion/trackserializer.cpp
+      src/companion/trackserializer.h
       src/companion/waveformmxwf.cpp
+      src/companion/waveformmxwf.h
   )
   target_compile_definitions(mixxx-lib PUBLIC __COMPANION__)
 endif()
