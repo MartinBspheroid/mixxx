@@ -114,6 +114,33 @@ TEST(CompanionPairingTest, SerializeLoadRoundTrip) {
     EXPECT_TRUE(restored.hasPairedDevices());
 }
 
+TEST(CompanionPairingTest, SessionCodeAuthorizesFullControl) {
+    PairingManager pm;
+    pm.setSessionCode(QStringLiteral("482913"));
+    // The session code is a full-control credential for LAN clients.
+    EXPECT_EQ(pm.authorize(false, "482913", /*needsControl*/ false),
+            PairingManager::AuthResult::Ok);
+    EXPECT_EQ(pm.authorize(false, "482913", /*needsControl*/ true),
+            PairingManager::AuthResult::Ok);
+    // Wrong code stays unauthorized.
+    EXPECT_EQ(pm.authorize(false, "000000", false),
+            PairingManager::AuthResult::Unauthorized);
+    // No code set -> nothing is accepted.
+    PairingManager pmEmpty;
+    EXPECT_EQ(pmEmpty.authorize(false, "482913", false),
+            PairingManager::AuthResult::Unauthorized);
+}
+
+TEST(CompanionPairingTest, MakeCodeIsSixDigits) {
+    for (int i = 0; i < 20; ++i) {
+        const QString code = PairingManager::makeCode();
+        EXPECT_EQ(code.size(), 6);
+        bool ok = false;
+        code.toInt(&ok);
+        EXPECT_TRUE(ok);
+    }
+}
+
 TEST(CompanionPairingTest, HashIsDeterministicAndNotPlaintext) {
     const QByteArray token = "abc123";
     const QByteArray h1 = PairingManager::hashToken(token);

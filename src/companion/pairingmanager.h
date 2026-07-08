@@ -45,6 +45,21 @@ class PairingManager {
     /// SHA-256 hex digest of a token. Static so tests can check hashing.
     static QByteArray hashToken(const QByteArray& token);
 
+    /// Generate a random 6-digit code ("000000".."999999").
+    static QString makeCode();
+
+    /// The session pairing code: a 6-digit code valid for the whole Mixxx
+    /// session that authenticates LAN clients with full control scope. This is
+    /// the primary, user-visible credential — connecting is always "read the
+    /// code off Mixxx, type it on the phone". Tokens remain as an optional
+    /// long-lived mechanism underneath.
+    void setSessionCode(const QString& code) {
+        m_sessionCode = code;
+    }
+    QString sessionCode() const {
+        return m_sessionCode;
+    }
+
     /// Replace the in-memory token set from a serialized JSON array string
     /// (as produced by serializeTokens()). Invalid input clears the set.
     void loadTokens(const QString& json);
@@ -80,10 +95,11 @@ class PairingManager {
     bool revokeDevice(const QByteArray& id);
 
   private:
-    static QString generateCode();
     static QByteArray generateToken();
 
     QHash<QByteArray, TokenRecord> m_tokens; ///< key = token hash hex
+
+    QString m_sessionCode;
 
     QString m_pendingCode;
     qint64 m_pendingExpiresMs = 0;

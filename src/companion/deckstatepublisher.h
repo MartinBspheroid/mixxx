@@ -34,6 +34,11 @@ class DeckStatePublisher : public QObject {
     /// A tick or seek for `deck` (1-based). `partialTick` carries `type` and the
     /// state fields; the server adds `generation` and `serverTimeMs`.
     void tickReady(int deck, const QJsonObject& partialTick);
+    /// The deck configuration changed (or was first observed). `numDecks` is
+    /// the engine deck count ([App],num_decks); `visibleDecks` is what the skin
+    /// actually shows (2 when [Skin],show_4decks exists and is off, else
+    /// numDecks). Emitted once at startup and on every change.
+    void decksConfigChanged(int numDecks, int visibleDecks);
 
   private slots:
     void onTimeout();
@@ -53,6 +58,8 @@ class DeckStatePublisher : public QObject {
     QTimer* m_pTimer;
     QElapsedTimer m_clock;
     QVector<DeckSample> m_samples;
+    int m_lastNumDecks = -1;     ///< last emitted engine deck count
+    int m_lastVisibleDecks = -1; ///< last emitted visible deck count
 };
 
 } // namespace companion

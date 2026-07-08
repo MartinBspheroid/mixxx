@@ -3,13 +3,17 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
 
+class Library;
 class PlayerManager;
+class QAbstractItemModel;
 class TrackCollectionManager;
+class TrackModel;
 class QThread;
 
 namespace mixxx {
@@ -30,6 +34,7 @@ class CompanionService : public QObject {
     CompanionService(UserSettingsPointer pConfig,
             PlayerManager* pPlayerManager,
             TrackCollectionManager* pTrackCollectionManager,
+            Library* pLibrary,
             QString appVersion,
             QObject* parent = nullptr);
     ~CompanionService() override;
@@ -62,6 +67,8 @@ class CompanionService : public QObject {
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
     void deckUnloadedEvent(int deck, quint64 generation);
     void numberOfDecksChangedEvent(int numDecks);
+    void libraryViewEvent(const QJsonObject& event);
+    void libraryCursorEvent(const QJsonObject& event);
 
   private:
     void connectDecks(int fromIndex, int toIndex);
@@ -71,10 +78,15 @@ class CompanionService : public QObject {
     void onLoadToDeckRequested(int deck, int trackId, bool play);
     void onAutoDjQueueRequested(int trackId);
     void onPersistTokens(const QString& tokensJson);
+    void onShowTrackModel(QAbstractItemModel* pModel);
+    void onTrackSelected(const TrackPointer& pTrack);
+    QJsonObject buildCursorWindow(TrackModel* pTrackModel, int cursorRow) const;
 
     UserSettingsPointer m_pConfig;
     PlayerManager* m_pPlayerManager;
     TrackCollectionManager* m_pTrackCollectionManager;
+    Library* m_pLibrary;
+    QPointer<QAbstractItemModel> m_pLibraryModel; ///< active library view model
     const QString m_appVersion;
 
     QThread* m_pThread;

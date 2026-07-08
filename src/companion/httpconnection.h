@@ -26,11 +26,17 @@ struct HttpRequest {
         return headers.value(QByteArray(name).toLower());
     }
 
-    /// Token from `Authorization: Bearer <token>`, else the `token` query param.
+    /// Credential from `Authorization: Bearer <cred>`, else the `code` query
+    /// param (the 6-digit session pairing code — the primary way clients
+    /// authenticate), else the `token` query param (long-lived tokens).
     QByteArray bearerToken() const {
         const QByteArray auth = header("authorization");
         if (auth.startsWith("Bearer ")) {
             return auth.mid(7).trimmed();
+        }
+        const QString code = query.queryItemValue(QStringLiteral("code"));
+        if (!code.isEmpty()) {
+            return code.toUtf8();
         }
         return query.queryItemValue(QStringLiteral("token")).toUtf8();
     }

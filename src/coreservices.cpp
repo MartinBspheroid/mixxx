@@ -762,6 +762,7 @@ void CoreServices::initialize(QApplication* pApp) {
             pConfig,
             m_pPlayerManager.get(),
             m_pTrackCollectionManager.get(),
+            m_pLibrary.get(),
             VersionStore::version());
     m_pCompanionService->start();
 #endif

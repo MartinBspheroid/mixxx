@@ -27,37 +27,28 @@ A client on `127.0.0.1` is trusted and needs no token. Great for local dashboard
 GET http://127.0.0.1:24742/v1/status
 ```
 
-### LAN (phone over Wi-Fi) — pair once, then bearer token
+### LAN (phone over Wi-Fi) — the 6-digit session code
 
-Non-loopback clients must present a token. Getting one is a two-step pairing:
+Non-loopback clients authenticate with the **session pairing code**: a 6-digit
+code Mixxx generates at startup, prints prominently in its log, and serves via
+`GET /v1/pair/code` (loopback-only, for a local helper/overlay to display).
+It is valid for the whole Mixxx session with full control scope — the connect
+flow is always simply: *read the code off Mixxx, type it on the phone*.
 
-1. **The operator** opens a pairing window from a trusted (loopback) context —
-   e.g. a helper on the laptop, or the future Preferences button:
-   ```
-   POST http://127.0.0.1:24742/v1/pair
-   → {"code":"481920","expiresInSeconds":60,
-      "qr":"mixxx-companion://pair?port=24742&code=481920"}
-   ```
-   Show the code (or QR) to the user. It is valid 60 s, 5 attempts.
+Pass it on every request:
 
-2. **The phone** claims the code for a long-lived token:
-   ```
-   POST http://<laptop>:24742/v1/pair/claim
-   Body: {"code":"481920","deviceName":"Pixel 8","readOnly":false}
-   → {"token":"<64-hex>","readOnly":false}
-   ```
-   Store the token securely. It is shown exactly once. `readOnly:true` yields a
-   token that can read but cannot perform actions.
+```
+GET http://<laptop>:24742/v1/status?code=481920        # query param, or:
+Authorization: Bearer 481920                            # header
+ws://<laptop>:24742/ws/v1?code=481920                   # WebSocket upgrade
+```
 
-3. **Every subsequent request** carries the token:
-   ```
-   GET http://<laptop>:24742/v1/status
-   Authorization: Bearer <token>
-   ```
-   For the WebSocket, pass it as a query param: `ws://<laptop>:24742/ws/v1?token=<token>`.
+Wrong/missing code → `401 unauthorized`. A new code is generated each time
+Mixxx starts, so the phone should re-prompt on 401 after a reconnect.
 
-Unpaired LAN requests get `401 unauthorized`; a read-only token attempting an
-action gets `403 action_not_allowed`.
+(Long-lived per-device tokens still exist underneath — `POST /v1/pair` +
+`/v1/pair/claim` — for clients that want to skip code entry across sessions;
+read-only tokens get `403` on actions. Optional; the code is the primary flow.)
 
 > **Transport note:** v1 is plain HTTP — tokens are sniffable on open Wi-Fi. Use a
 > trusted LAN or a personal hotspot. TLS/wss is a planned future addition.
@@ -143,6 +134,39 @@ The server pushes events; the client may send a few messages.
   this is an orientation HUD, not a scratch display.
 - **Reconnect:** on socket drop, reconnect with backoff and re-fetch `/v1/decks`
   for a fresh snapshot; the server also replays `deck.loaded` on connect.
+
+## 4b. Deck layout & the library browse HUD
+
+**Deck layout:** the first replay message on connect is `decks.config`
+(`{"numDecks":4,"visibleDecks":2}`) — render `visibleDecks` decks. It re-fires
+if the user toggles the skin's 4-deck view.
+
+**Library HUD:** the phone mirrors what the user is browsing in Mixxx — always
+just the current folder and the cursor, exactly like a hardware controller
+display:
+
+- `library.view` — the user switched views (crate/playlist/folder/search):
+  `{viewKey, search?, rowCount}`. Reset the list.
+- `library.cursor` — the highlighted row settled (~100 ms debounce):
+  `{viewKey, row, rowCount, track:{...}, window:{start, rows:[{row,id,title,artist,bpm,key}]}}`.
+  Render `window.rows` as the visible slice, highlight `row`, show
+  `row+1 / rowCount` as the position indicator. `row: -1` = selection cleared.
+- Latest view + cursor are replayed on connect.
+
+Navigation commands (mirror a browse knob — the resulting `library.cursor`
+events are your confirmation):
+
+```
+POST /v1/library/move   {"delta": 1}    # cursor down/up N rows
+POST /v1/library/scroll {"delta": 1}    # page down/up
+POST /v1/library/focus  {"delta": 1}    # sidebar <-> track list
+POST /v1/library/goto   {}              # enter/activate highlighted item
+POST /v1/decks/1/loadSelected {"play": true}   # load cursor track & play
+```
+
+Suggested phone UX: a scroll wheel/list fling maps to `move` deltas; tapping a
+visible row sends `move` with the row delta then `loadSelected` (or use
+`/v1/decks/:deck/load {trackId}` directly since window rows carry ids).
 
 ## 5. Search
 

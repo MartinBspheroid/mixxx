@@ -17,7 +17,7 @@ QByteArray PairingManager::hashToken(const QByteArray& token) {
     return QCryptographicHash::hash(token, QCryptographicHash::Sha256).toHex();
 }
 
-QString PairingManager::generateCode() {
+QString PairingManager::makeCode() {
     // 6-digit numeric code (000000-999999).
     const quint32 value = QRandomGenerator::system()->bounded(1000000u);
     return QStringLiteral("%1").arg(value, 6, 10, QLatin1Char('0'));
@@ -75,7 +75,7 @@ QString PairingManager::serializeDevices() const {
 }
 
 QString PairingManager::beginPairing(int ttlSeconds, qint64 nowMs) {
-    m_pendingCode = generateCode();
+    m_pendingCode = makeCode();
     m_pendingExpiresMs = nowMs + static_cast<qint64>(ttlSeconds) * 1000;
     m_pendingAttempts = 0;
     return m_pendingCode;
@@ -124,6 +124,11 @@ PairingManager::AuthResult PairingManager::authorize(
     }
     if (token.isEmpty()) {
         return AuthResult::Unauthorized;
+    }
+    // The session pairing code is the primary credential: full control scope,
+    // valid for the whole session.
+    if (!m_sessionCode.isEmpty() && token == m_sessionCode.toLatin1()) {
+        return AuthResult::Ok;
     }
     const auto it = m_tokens.constFind(hashToken(token));
     if (it == m_tokens.constEnd()) {

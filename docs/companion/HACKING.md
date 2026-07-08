@@ -67,6 +67,17 @@ curl -s "http://127.0.0.1:24742/v1/library/search?q=bpm:120-128&bpmMin=124&key=8
 curl -s http://127.0.0.1:24742/v1/decks | jq
 curl -s http://127.0.0.1:24742/v1/decks/1 | jq
 
+# Session pairing code — the primary LAN credential (full session, full control)
+grep "pairing code" <settings>/mixxx.log            # printed at startup
+curl -s http://127.0.0.1:24742/v1/pair/code | jq    # loopback-only
+curl -s "http://<laptop>:24742/v1/status?code=123456"   # phone authenticates with it
+
+# Library browse HUD — mirror the current folder + cursor, drive navigation
+websocat ws://127.0.0.1:24742/ws/v1    # watch library.view / library.cursor / decks.config
+curl -s -X POST http://127.0.0.1:24742/v1/library/move -d '{"delta":3}'
+curl -s -X POST http://127.0.0.1:24742/v1/library/goto
+curl -s -X POST http://127.0.0.1:24742/v1/decks/1/loadSelected -d '{"play":true}'
+
 # Pairing + auth (T08) — loopback is open; LAN clients need a bearer token
 #   1) from a trusted (loopback) shell, open a pairing window:
 curl -s -X POST http://127.0.0.1:24742/v1/pair | jq   # -> {code, expiresInSeconds, qr}

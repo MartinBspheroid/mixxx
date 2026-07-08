@@ -94,3 +94,14 @@ Verification:
   `save()` matters and why `timeout`-killed runs never wrote settings before.
 
 Out of scope (unchanged): TLS/wss, mDNS discovery, Preferences UI.
+
+## Update (2026-07-08): session pairing code is now the primary credential
+
+Per user direction: connecting should always be "read the obvious 6-digit code
+off Mixxx, type it on the phone" — no long token UX. `PairingManager` gained a
+session code (generated at server start, full session validity, full control
+scope), printed as a log banner and served via loopback-only `GET /v1/pair/code`
+for a local helper/overlay to display. Clients pass `?code=` (HTTP/WS) or
+`Authorization: Bearer`. Long-lived tokens remain underneath as an optional
+skip-code-entry mechanism. Live-verified: `/v1/pair/code` returns the code;
+unit tests cover full-control scope + rejection (13/13 pass).

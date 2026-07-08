@@ -45,6 +45,7 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
           m_tickIntervalMs(tickIntervalMs),
           m_appVersion(std::move(appVersion)),
           m_numDecks(numDecks),
+          m_visibleDecks(numDecks),
           m_pQueryHandler(pQueryHandler),
           m_pTcpServer(nullptr),
           m_pWsServer(nullptr),
@@ -84,8 +85,19 @@ void CompanionServer::initialize() {
             &DeckStatePublisher::tickReady,
             this,
             &CompanionServer::onTickReady);
+    connect(m_pPublisher,
+            &DeckStatePublisher::decksConfigChanged,
+            this,
+            &CompanionServer::onDecksConfigChanged);
     m_pPublisher->setDecks(m_numDecks);
     m_pPublisher->start();
+
+    // The session pairing code: valid for the whole session, full control
+    // scope. This is what the user types on the phone — keep it obvious.
+    m_pairing.setSessionCode(PairingManager::makeCode());
+    kLogger.info() << "=====================================";
+    kLogger.info() << "Companion pairing code:" << m_pairing.sessionCode();
+    kLogger.info() << "=====================================";
 
     kLogger.info() << "Companion API listening on" << m_bindAddress.toString()
                    << "port" << m_port;
@@ -261,7 +273,50 @@ void CompanionServer::onNumberOfDecksChanged(int numDecks) {
     }
 }
 
+void CompanionServer::onDecksConfigChanged(int numDecks, int visibleDecks) {
+    m_numDecks = numDecks;
+    m_visibleDecks = visibleDecks;
+    if (m_pPublisher) {
+        m_pPublisher->setDecks(numDecks);
+    }
+    QJsonObject event;
+    event.insert(QStringLiteral("type"), QStringLiteral("decks.config"));
+    event.insert(QStringLiteral("numDecks"), numDecks);
+    event.insert(QStringLiteral("visibleDecks"), visibleDecks);
+    event.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
+    broadcast(event);
+}
+
+void CompanionServer::onLibraryView(const QJsonObject& event) {
+    m_lastLibraryView = event;
+    m_lastLibraryCursor = QJsonObject(); // cursor is stale in a new view
+    broadcast(event);
+}
+
+void CompanionServer::onLibraryCursor(const QJsonObject& event) {
+    m_lastLibraryCursor = event;
+    broadcast(event);
+}
+
 void CompanionServer::sendReplay(QWebSocket* pClient) {
+    // Deck configuration first so the client lays out 2 vs 4 decks correctly.
+    {
+        QJsonObject config;
+        config.insert(QStringLiteral("type"), QStringLiteral("decks.config"));
+        config.insert(QStringLiteral("numDecks"), m_numDecks);
+        config.insert(QStringLiteral("visibleDecks"), m_visibleDecks);
+        config.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
+        pClient->sendTextMessage(QString::fromUtf8(
+                QJsonDocument(config).toJson(QJsonDocument::Compact)));
+    }
+    if (!m_lastLibraryView.isEmpty()) {
+        pClient->sendTextMessage(QString::fromUtf8(
+                QJsonDocument(m_lastLibraryView).toJson(QJsonDocument::Compact)));
+    }
+    if (!m_lastLibraryCursor.isEmpty()) {
+        pClient->sendTextMessage(QString::fromUtf8(QJsonDocument(
+                m_lastLibraryCursor).toJson(QJsonDocument::Compact)));
+    }
     for (auto it = m_deckSnapshots.constBegin(); it != m_deckSnapshots.constEnd();
             ++it) {
         if (!it->loaded) {
@@ -363,6 +418,13 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
             return handleWaveformSummary(trackId);
         }
         return HttpResponse::error(404, "not_found");
+    }
+
+    // POST /v1/library/{move,scroll,goto,focus} — remote library navigation
+    if (request.method == "POST" && segments.size() == 3 &&
+            segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("library")) {
+        return handleLibraryNav(segments.at(2), request);
     }
 
     // POST /v1/autodj/queue
@@ -539,6 +601,44 @@ HttpResponse CompanionServer::handleSearch(const HttpRequest& request) {
     return HttpResponse::json(200, json);
 }
 
+HttpResponse CompanionServer::handleLibraryNav(
+        const QString& action, const HttpRequest& request) {
+    // Drives the same [Library] controls hardware controllers use, so the
+    // phone mirrors exactly what a browse knob does. ControlObject::set is
+    // thread-safe; no main-thread hop needed. The resulting view/cursor
+    // changes flow back as library.view / library.cursor events.
+    const QJsonObject body = QJsonDocument::fromJson(request.body).object();
+    const int delta = body.value(QStringLiteral("delta")).toInt(1);
+    const QString group = QStringLiteral("[Library]");
+
+    if (action == QLatin1String("move")) {
+        // Move the cursor by delta rows (encoder semantics; negative = up).
+        ControlObject::set(
+                ConfigKey(group, QStringLiteral("MoveVertical")), delta);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == QLatin1String("scroll")) {
+        // Page-wise scrolling (pageup/pagedown semantics).
+        ControlObject::set(
+                ConfigKey(group, QStringLiteral("ScrollVertical")), delta);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == QLatin1String("focus")) {
+        // Move keyboard focus between library panes (sidebar <-> track list).
+        ControlObject::set(
+                ConfigKey(group, QStringLiteral("MoveFocus")), delta);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == QLatin1String("goto")) {
+        // Activate the highlighted item (expand/enter sidebar item, or the
+        // configured GoToItem behavior in the track list).
+        ControlObject::set(ConfigKey(group, QStringLiteral("GoToItem")), 1.0);
+        ControlObject::set(ConfigKey(group, QStringLiteral("GoToItem")), 0.0);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    return HttpResponse::error(403, "action_not_allowed", "unknown action");
+}
+
 HttpResponse CompanionServer::handleDeckAction(
         int deck, const QByteArray& action, const HttpRequest& request) {
     const QString group = PlayerManager::groupForDeck(deck - 1);
@@ -584,6 +684,19 @@ HttpResponse CompanionServer::handleDeckAction(
         }
         ControlObject::set(
                 ConfigKey(group, QStringLiteral("playposition")), position);
+        return HttpResponse::json(200, "{\"ok\":true}");
+    }
+    if (action == "loadSelected") {
+        // Load the track currently highlighted in the library (the HUD cursor)
+        // to this deck — same control a hardware "load" button uses.
+        const QJsonObject body =
+                QJsonDocument::fromJson(request.body).object();
+        const bool play = body.value(QStringLiteral("play")).toBool();
+        const QString control = play
+                ? QStringLiteral("LoadSelectedTrackAndPlay")
+                : QStringLiteral("LoadSelectedTrack");
+        ControlObject::set(ConfigKey(group, control), 1.0);
+        ControlObject::set(ConfigKey(group, control), 0.0);
         return HttpResponse::json(200, "{\"ok\":true}");
     }
     if (action == "load") {
@@ -655,6 +768,20 @@ HttpResponse CompanionServer::handlePairing(
                 200, QJsonDocument(obj).toJson(QJsonDocument::Compact));
     }
 
+    // GET /v1/pair/code  (loopback only) — the session pairing code, so a
+    // local helper/overlay can display it to the user.
+    if (segments.size() == 3 && segments.at(2) == QLatin1String("code") &&
+            request.method == "GET") {
+        if (!request.fromLoopback) {
+            return HttpResponse::error(403, "action_not_allowed", "local only");
+        }
+        QJsonObject obj;
+        obj.insert(QStringLiteral("code"), m_pairing.sessionCode());
+        obj.insert(QStringLiteral("port"), m_port);
+        return HttpResponse::json(
+                200, QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    }
+
     // GET /v1/pair/devices  (loopback only)
     if (segments.size() == 3 && segments.at(2) == QLatin1String("devices") &&
             request.method == "GET") {
@@ -686,14 +813,16 @@ HttpResponse CompanionServer::handleStatus() {
     status.insert(QStringLiteral("version"), m_appVersion);
     status.insert(QStringLiteral("apiVersion"), kApiVersion);
     status.insert(QStringLiteral("numDecks"), m_numDecks);
+    status.insert(QStringLiteral("visibleDecks"), m_visibleDecks);
     status.insert(QStringLiteral("libraryReady"), true);
     status.insert(QStringLiteral("uptimeMs"), serverTimeMs());
     status.insert(QStringLiteral("clients"), m_clients.size());
-    // Loopback-only bind is open; LAN-exposed binds require a bearer token.
+    // Loopback-only bind is open; LAN-exposed binds require the session
+    // pairing code (or a long-lived token).
     status.insert(QStringLiteral("auth"),
             m_bindAddress == QHostAddress(QHostAddress::LocalHost)
                     ? QStringLiteral("open-loopback")
-                    : QStringLiteral("token"));
+                    : QStringLiteral("code"));
     status.insert(QStringLiteral("pairedDevices"), m_pairing.hasPairedDevices());
     return HttpResponse::json(
             200, QJsonDocument(status).toJson(QJsonDocument::Compact));

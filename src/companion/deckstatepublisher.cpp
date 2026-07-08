@@ -56,6 +56,28 @@ void DeckStatePublisher::stop() {
 
 void DeckStatePublisher::onTimeout() {
     const qint64 nowMs = m_clock.isValid() ? m_clock.elapsed() : 0;
+
+    // Deck configuration: engine deck count plus what the skin actually shows.
+    // [Skin],show_4decks is created by the official skins once loaded; when it
+    // exists and is off, only decks 1+2 are visible.
+    {
+        const int numDecks = static_cast<int>(
+                ControlObject::get(ConfigKey(QStringLiteral("[App]"),
+                        QStringLiteral("num_decks"))));
+        int visibleDecks = numDecks;
+        const ConfigKey show4Key(
+                QStringLiteral("[Skin]"), QStringLiteral("show_4decks"));
+        if (numDecks > 2 && ControlObject::exists(show4Key)) {
+            if (ControlObject::get(show4Key) == 0.0) {
+                visibleDecks = 2;
+            }
+        }
+        if (numDecks != m_lastNumDecks || visibleDecks != m_lastVisibleDecks) {
+            m_lastNumDecks = numDecks;
+            m_lastVisibleDecks = visibleDecks;
+            emit decksConfigChanged(numDecks, visibleDecks);
+        }
+    }
     for (int i = 0; i < m_numDecks && i < m_samples.size(); ++i) {
         const QString group = PlayerManager::groupForDeck(i);
         const int deck = i + 1;

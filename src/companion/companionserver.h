@@ -62,6 +62,12 @@ class CompanionServer : public QObject {
     void onDeckUnloaded(int deck, quint64 generation);
     /// The number of decks changed (rewires the publisher).
     void onNumberOfDecksChanged(int numDecks);
+    /// The library view changed (new folder/crate/playlist shown). Snapshot is
+    /// stored for replay and broadcast as `library.view`.
+    void onLibraryView(const QJsonObject& event);
+    /// The library cursor (highlighted track) changed. Broadcast as
+    /// `library.cursor`.
+    void onLibraryCursor(const QJsonObject& event);
 
   signals:
     /// Emitted after a successful listen(), for logging/status.
@@ -86,10 +92,14 @@ class CompanionServer : public QObject {
     void onClientTextMessage(const QString& message);
     /// A tick from the publisher, missing only generation + serverTimeMs.
     void onTickReady(int deck, const QJsonObject& partialTick);
+    /// The deck configuration (engine/visible deck count) changed.
+    void onDecksConfigChanged(int numDecks, int visibleDecks);
 
   private:
     HttpResponse route(const HttpRequest& request);
     HttpResponse handlePairing(const QStringList& segments, const HttpRequest& request);
+    HttpResponse handleLibraryNav(
+            const QString& action, const HttpRequest& request);
     HttpResponse handleStatus();
     HttpResponse handleDecks();
     QJsonObject deckStateJson(int deck) const;
@@ -109,7 +119,10 @@ class CompanionServer : public QObject {
     const int m_tickIntervalMs;
     const QString m_appVersion;
     int m_numDecks;
+    int m_visibleDecks;
     QObject* m_pQueryHandler;
+    QJsonObject m_lastLibraryView;   ///< latest library.view, for replay
+    QJsonObject m_lastLibraryCursor; ///< latest library.cursor, for replay
 
     PairingManager m_pairing;
 

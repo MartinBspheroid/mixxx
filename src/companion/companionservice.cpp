@@ -17,10 +17,14 @@
 #include "companion/companionsettings.h"
 #include "companion/trackserializer.h"
 #include "companion/waveformmxwf.h"
+#include <QAbstractItemModel>
+
 #include "library/dao/analysisdao.h"
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackschema.h"
+#include "library/library.h"
 #include "library/searchquery.h"
+#include "library/trackmodel.h"
 #include "library/searchqueryparser.h"
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
@@ -65,12 +69,14 @@ namespace companion {
 CompanionService::CompanionService(UserSettingsPointer pConfig,
         PlayerManager* pPlayerManager,
         TrackCollectionManager* pTrackCollectionManager,
+        Library* pLibrary,
         QString appVersion,
         QObject* parent)
         : QObject(parent),
           m_pConfig(std::move(pConfig)),
           m_pPlayerManager(pPlayerManager),
           m_pTrackCollectionManager(pTrackCollectionManager),
+          m_pLibrary(pLibrary),
           m_appVersion(std::move(appVersion)),
           m_pThread(nullptr),
           m_pServer(nullptr),
@@ -134,6 +140,28 @@ void CompanionService::start() {
             &CompanionServer::persistTokens,
             this,
             &CompanionService::onPersistTokens);
+    connect(this,
+            &CompanionService::libraryViewEvent,
+            m_pServer,
+            &CompanionServer::onLibraryView);
+    connect(this,
+            &CompanionService::libraryCursorEvent,
+            m_pServer,
+            &CompanionServer::onLibraryCursor);
+
+    // Library browse HUD: observe the active view and the highlighted track.
+    // Both signals are emitted by the library widgets/features and arrive here
+    // on the main thread; trackSelected is debounced (~100 ms) by the view.
+    if (m_pLibrary) {
+        connect(m_pLibrary,
+                &Library::showTrackModel,
+                this,
+                [this](QAbstractItemModel* pModel) { onShowTrackModel(pModel); });
+        connect(m_pLibrary,
+                &Library::trackSelected,
+                this,
+                &CompanionService::onTrackSelected);
+    }
 
     m_pThread->start();
     // Create sockets and listeners on the worker thread once its event loop runs.
@@ -513,6 +541,113 @@ void CompanionService::onAutoDjQueueRequested(int trackId) {
     }
     playlistDao.appendTrackToPlaylist(id, autoDjId);
     kLogger.debug() << "autodj queue: appended track" << trackId;
+}
+
+void CompanionService::onShowTrackModel(QAbstractItemModel* pModel) {
+    // Main thread. The user switched the library to a new view (sidebar item,
+    // search result, ...). Remember the model so cursor events can resolve rows.
+    m_pLibraryModel = pModel;
+
+    QJsonObject event;
+    event.insert(QStringLiteral("type"), QStringLiteral("library.view"));
+    auto* pTrackModel = dynamic_cast<TrackModel*>(pModel);
+    if (pTrackModel) {
+        event.insert(QStringLiteral("viewKey"),
+                pTrackModel->modelKey(/*noSearch*/ true));
+        const QString search = pTrackModel->currentSearch();
+        if (!search.isEmpty()) {
+            event.insert(QStringLiteral("search"), search);
+        }
+    }
+    event.insert(QStringLiteral("rowCount"), pModel ? pModel->rowCount() : 0);
+    emit libraryViewEvent(event);
+}
+
+QJsonObject CompanionService::buildCursorWindow(
+        TrackModel* pTrackModel, int cursorRow) const {
+    // A small window of rows around the cursor so the phone renders the list
+    // exactly as the user sees it, without mirroring the whole view.
+    constexpr int kRowsBefore = 4;
+    constexpr int kRowsAfter = 6;
+
+    QAbstractItemModel* pModel = m_pLibraryModel.data();
+    QJsonObject window;
+    if (!pModel) {
+        return window;
+    }
+    const int rowCount = pModel->rowCount();
+    const int start = qBound(0, cursorRow - kRowsBefore, qMax(0, rowCount - 1));
+    const int end = qMin(rowCount - 1, cursorRow + kRowsAfter);
+
+    const int colTitle = pTrackModel->fieldIndex(QStringLiteral("title"));
+    const int colArtist = pTrackModel->fieldIndex(QStringLiteral("artist"));
+    const int colBpm = pTrackModel->fieldIndex(QStringLiteral("bpm"));
+    const int colKey = pTrackModel->fieldIndex(QStringLiteral("key"));
+
+    QJsonArray rows;
+    for (int row = start; row <= end; ++row) {
+        QJsonObject item;
+        item.insert(QStringLiteral("row"), row);
+        const TrackId id = pTrackModel->getTrackId(pModel->index(row, 0));
+        if (id.isValid()) {
+            item.insert(QStringLiteral("id"), id.toVariant().toInt());
+        }
+        if (colTitle >= 0) {
+            item.insert(QStringLiteral("title"),
+                    pModel->index(row, colTitle).data().toString());
+        }
+        if (colArtist >= 0) {
+            item.insert(QStringLiteral("artist"),
+                    pModel->index(row, colArtist).data().toString());
+        }
+        if (colBpm >= 0) {
+            const double bpm = pModel->index(row, colBpm).data().toDouble();
+            if (bpm > 0.0) {
+                item.insert(QStringLiteral("bpm"), bpm);
+            }
+        }
+        if (colKey >= 0) {
+            const QString key = pModel->index(row, colKey).data().toString();
+            if (!key.isEmpty()) {
+                item.insert(QStringLiteral("key"), key);
+            }
+        }
+        rows.append(item);
+    }
+    window.insert(QStringLiteral("start"), start);
+    window.insert(QStringLiteral("rows"), rows);
+    return window;
+}
+
+void CompanionService::onTrackSelected(const TrackPointer& pTrack) {
+    // Main thread; debounced by WTrackTableView (~100 ms after the cursor
+    // settles). A null track means the selection was cleared or is multi-row.
+    QJsonObject event;
+    event.insert(QStringLiteral("type"), QStringLiteral("library.cursor"));
+
+    auto* pTrackModel = dynamic_cast<TrackModel*>(m_pLibraryModel.data());
+    if (!pTrack || !pTrackModel) {
+        event.insert(QStringLiteral("row"), -1);
+        emit libraryCursorEvent(event);
+        return;
+    }
+
+    const int cursorRow =
+            pTrackModel->getTrackRows(pTrack->getId()).value(0, -1);
+    event.insert(QStringLiteral("viewKey"),
+            pTrackModel->modelKey(/*noSearch*/ true));
+    event.insert(QStringLiteral("row"), cursorRow);
+    event.insert(QStringLiteral("rowCount"),
+            m_pLibraryModel ? m_pLibraryModel->rowCount() : 0);
+
+    const CompanionSettings settings(m_pConfig);
+    event.insert(QStringLiteral("track"),
+            serializeTrack(pTrack, settings.exposeFilePaths()));
+    if (cursorRow >= 0) {
+        event.insert(QStringLiteral("window"),
+                buildCursorWindow(pTrackModel, cursorRow));
+    }
+    emit libraryCursorEvent(event);
 }
 
 void CompanionService::onPersistTokens(const QString& tokensJson) {

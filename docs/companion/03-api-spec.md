@@ -12,11 +12,19 @@ lands here in the same PR as the code.
 - Additive fields may appear at any time; clients must ignore unknown fields.
 - `GET /v1/status` reports `apiVersion` (integer, currently `1`).
 
-## Authentication (T08; MVP on localhost may run with auth disabled)
+## Authentication
 
-- Loopback connections: allowed without token by default.
-- Non-loopback: require `Authorization: Bearer <token>` (HTTP) or
-  `?token=<token>` (WS upgrade). Tokens are per-device, issued via pairing.
+- Loopback connections: allowed without a credential.
+- Non-loopback (LAN): authenticate with the **6-digit session pairing code** —
+  the primary, user-visible credential. Mixxx generates it at startup, prints it
+  prominently in the log, and serves it to local helpers via
+  `GET /v1/pair/code` (loopback-only). It is valid for the whole session with
+  full control scope. Pass it as `?code=123456` (HTTP or WS upgrade) or
+  `Authorization: Bearer 123456`.
+- Long-lived per-device tokens (via `POST /v1/pair` + `/v1/pair/claim`) remain
+  available underneath for clients that want to skip code entry, but the
+  standard connect flow is always: read the code off Mixxx, type it on the
+  phone.
 - Unauthorized → `401 {"error":{"code":"unauthorized"}}`.
 
 ## Error shape (all endpoints)
@@ -56,6 +64,11 @@ Codes: `bad_request`, `unauthorized`, `not_found`, `analysis_pending`,
 | `POST /v1/decks/:deck/sync` | `{}` | momentary beatsync |
 | `POST /v1/decks/:deck/seek` | `{"position": 0.25}` | seek (0..1); refused while playing unless `"force":true` |
 | `POST /v1/autodj/queue` | `{"trackId": 1234}` | append to Auto DJ queue |
+| `POST /v1/library/move` | `{"delta": 1}` | move library cursor by N rows (browse knob) |
+| `POST /v1/library/scroll` | `{"delta": 1}` | page up/down in the library |
+| `POST /v1/library/focus` | `{"delta": 1}` | move focus between sidebar and track list |
+| `POST /v1/library/goto` | `{}` | activate the highlighted item (enter folder) |
+| `POST /v1/decks/:deck/loadSelected` | `{"play": false}` | load the highlighted library track to deck |
 
 Actions return `200 {"ok":true}` or an error. Every action is also reflected as a
 subsequent WS event (state change), so clients never need to poll after acting.
@@ -148,6 +161,50 @@ current state so late joiners are instantly correct):
 
 ```json
 { "type": "deck.unloaded", "deck": 1, "generation": 43 }
+```
+
+`decks.config` — deck layout; sent on connect (first replay message) and on
+change, so the client renders 2 or 4 decks correctly. `numDecks` is the engine
+deck count (`[App],num_decks`); `visibleDecks` is what the skin shows
+(`[Skin],show_4decks` off → 2):
+
+```json
+{ "type": "decks.config", "numDecks": 4, "visibleDecks": 2,
+  "serverTimeMs": 182934701 }
+```
+
+### Library browse HUD events
+
+The phone mirrors the user's library navigation as a heads-up display: the
+current view (folder/crate/playlist/search) and the cursor (highlighted row),
+with a small window of rows around it. Sources inside Mixxx:
+`Library::showTrackModel` (view switched), `Library::trackSelected` (cursor
+settled, debounced ~100 ms by the track table). Latest view + cursor are
+replayed to clients on connect.
+
+`library.view` — the active view changed:
+
+```json
+{ "type": "library.view", "viewKey": "library:", "search": "bicep",
+  "rowCount": 184, "serverTimeMs": 182934701 }
+```
+
+`viewKey` is Mixxx's stable model identifier for the view (`modelKey`), e.g.
+the main library, a crate, a playlist, or a browse folder. `search` is present
+when a search filter is active.
+
+`library.cursor` — the highlighted track changed (`row: -1` = selection
+cleared/multi-select). `window` carries the rows the phone should display, so
+the HUD shows exactly the slice of the folder around the cursor:
+
+```json
+{ "type": "library.cursor", "viewKey": "library:", "row": 42, "rowCount": 184,
+  "track": { "id": 1234, "title": "Glue", "artist": "Bicep", "bpm": 129.98,
+             "key": "8A", "durationSeconds": 269.3 },
+  "window": { "start": 38,
+    "rows": [ { "row": 38, "id": 1201, "title": "…", "artist": "…",
+                "bpm": 124.0, "key": "5A" } ] },
+  "serverTimeMs": 182934701 }
 ```
 
 `library.changed` — coarse invalidation, Phase 3:
