@@ -2861,6 +2861,7 @@ if(BUILD_TESTING)
       PRIVATE
         src/test/companionwaveformtest.cpp
         src/test/companionpairingtest.cpp
+        src/test/companionhttptest.cpp
     )
   endif()
 

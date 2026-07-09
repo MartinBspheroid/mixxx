@@ -81,6 +81,10 @@ class HttpConnection : public QObject {
         m_router = std::move(router);
     }
 
+    /// Parse a complete HTTP/1.1 request (request line + headers + body) into
+    /// `pOut`. Pure function, public for unit testing.
+    static bool parseRequest(const QByteArray& raw, HttpRequest* pOut);
+
   signals:
     /// Emitted when the incoming request is a WebSocket handshake. The socket is
     /// handed over with its buffer untouched (classification used peek only), so
@@ -100,7 +104,6 @@ class HttpConnection : public QObject {
   private:
     void classifyAndDispatch();
     void handleHttpRequest();
-    bool parseRequest(const QByteArray& raw, HttpRequest* pOut);
     void writeResponse(const HttpResponse& response);
     void fail(int status, const QByteArray& code);
 

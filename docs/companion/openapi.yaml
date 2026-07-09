@@ -1,0 +1,297 @@
+# Machine-readable HTTP contract for the Mixxx Companion API.
+# The WebSocket event stream (/ws/v1) is documented in 03-api-spec.md.
+openapi: 3.0.3
+info:
+  title: Mixxx Companion API
+  version: "1"
+  description: >
+    Local-network companion API for Mixxx (fork feature). Loopback clients are
+    trusted; LAN clients authenticate with the 6-digit session pairing code
+    (query `?code=` or `Authorization: Bearer <code>`). All responses carry
+    permissive CORS headers. Live deck/library state streams over the
+    WebSocket at /ws/v1 (see 03-api-spec.md).
+servers:
+  - url: http://{host}:24742
+    variables:
+      host:
+        default: 127.0.0.1
+security:
+  - bearerAuth: []
+  - codeQuery: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    codeQuery:
+      type: apiKey
+      in: query
+      name: code
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [bad_request, unauthorized, not_found, analysis_pending,
+                     action_not_allowed, too_many_attempts, internal]
+            message: {type: string}
+    TrackDto:
+      type: object
+      required: [id, title, artist, durationSeconds]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        artist: {type: string}
+        album: {type: string}
+        genre: {type: string}
+        comment: {type: string}
+        bpm: {type: number}
+        key: {type: string}
+        durationSeconds: {type: number}
+        rating: {type: integer}
+        playCount: {type: integer}
+        color: {type: string, description: "#RRGGBB"}
+        location: {type: string, description: only when expose_file_paths=1}
+    TrackSearchRow:
+      type: object
+      required: [id, title, artist, durationSeconds]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        artist: {type: string}
+        album: {type: string}
+        bpm: {type: number}
+        key: {type: string}
+        durationSeconds: {type: number}
+        rating: {type: integer}
+        lastPlayedAtIso: {type: string}
+        position: {type: integer, description: playlist/history entries only}
+        playedAtIso: {type: string, description: history entries only}
+    DeckState:
+      type: object
+      required: [deck, generation, playposition, positionSeconds,
+                 durationSeconds, rate, playing, vu]
+      properties:
+        deck: {type: integer, minimum: 1}
+        generation: {type: integer}
+        track: {$ref: "#/components/schemas/TrackDto"}
+        playposition: {type: number, minimum: 0, maximum: 1}
+        positionSeconds: {type: number}
+        durationSeconds: {type: number}
+        rate: {type: number, description: playback ratio, 1.0 = original tempo}
+        playing: {type: boolean}
+        vu: {type: number}
+    Status:
+      type: object
+      properties:
+        app: {type: string}
+        version: {type: string}
+        apiVersion: {type: integer}
+        numDecks: {type: integer}
+        visibleDecks: {type: integer}
+        libraryReady: {type: boolean}
+        uptimeMs: {type: integer}
+        clients: {type: integer}
+        auth: {type: string, enum: [open-loopback, code]}
+        pairedDevices: {type: boolean, description: long-lived token devices only}
+  responses:
+    NotFound:
+      description: Not found
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+paths:
+  /v1/status:
+    get:
+      summary: Service and app info
+      responses:
+        "200":
+          description: OK
+          content: {application/json: {schema: {$ref: "#/components/schemas/Status"}}}
+  /v1/decks:
+    get:
+      summary: Snapshot of all decks
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: "#/components/schemas/DeckState"}}
+  /v1/decks/{deck}:
+    get:
+      summary: Snapshot of one deck
+      parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK, content: {application/json: {schema: {$ref: "#/components/schemas/DeckState"}}}}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/decks/{deck}/load:
+    post:
+      summary: Load a library track to the deck (async; confirmed by deck.loaded)
+      parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [trackId]
+              properties: {trackId: {type: integer}, play: {type: boolean}}
+      responses:
+        "202": {description: Accepted}
+  /v1/decks/{deck}/loadSelected:
+    post:
+      summary: Load the library-cursor track to the deck
+      parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, properties: {play: {type: boolean}}}
+      responses:
+        "200": {description: OK}
+  /v1/decks/{deck}/play: {post: {summary: Play, responses: {"200": {description: OK}}, parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]}}
+  /v1/decks/{deck}/pause: {post: {summary: Pause, responses: {"200": {description: OK}}, parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]}}
+  /v1/decks/{deck}/cue: {post: {summary: Cue (press+release), responses: {"200": {description: OK}}, parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]}}
+  /v1/decks/{deck}/sync: {post: {summary: Momentary beat sync, responses: {"200": {description: OK}}, parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]}}
+  /v1/decks/{deck}/seek:
+    post:
+      summary: Seek (refused while playing unless force)
+      parameters: [{name: deck, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [position]
+              properties:
+                position: {type: number, minimum: 0, maximum: 1}
+                force: {type: boolean}
+      responses:
+        "200": {description: OK}
+        "409": {description: Deck is playing and force not set}
+  /v1/autodj/queue:
+    post:
+      summary: Append a track to the Auto DJ queue
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, required: [trackId], properties: {trackId: {type: integer}}}
+      responses:
+        "202": {description: Accepted}
+  /v1/library/search:
+    get:
+      summary: Search the library (Mixxx search grammar in q)
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: bpmMin, in: query, schema: {type: integer}}
+        - {name: bpmMax, in: query, schema: {type: integer}}
+        - {name: key, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 50, maximum: 200}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  query: {type: string}
+                  total: {type: integer, description: capped at 1000}
+                  offset: {type: integer}
+                  limit: {type: integer}
+                  tracks: {type: array, items: {$ref: "#/components/schemas/TrackSearchRow"}}
+  /v1/library/move:
+    post:
+      summary: Move the library cursor by delta rows (browse knob)
+      requestBody: {content: {application/json: {schema: {type: object, properties: {delta: {type: integer, default: 1}}}}}}
+      responses: {"200": {description: OK}}
+  /v1/library/scroll:
+    post: {summary: Page up/down, requestBody: {content: {application/json: {schema: {type: object, properties: {delta: {type: integer}}}}}}, responses: {"200": {description: OK}}}
+  /v1/library/focus:
+    post: {summary: Move focus between sidebar and track list, requestBody: {content: {application/json: {schema: {type: object, properties: {delta: {type: integer}}}}}}, responses: {"200": {description: OK}}}
+  /v1/library/goto:
+    post: {summary: Activate the highlighted item, responses: {"200": {description: OK}}}
+  /v1/playlists:
+    get:
+      summary: List user playlists
+      responses: {"200": {description: OK}}
+  /v1/playlists/{id}/tracks:
+    get:
+      summary: Playlist tracks in order
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/crates:
+    get: {summary: List crates, responses: {"200": {description: OK}}}
+  /v1/crates/{id}/tracks:
+    get:
+      summary: Crate tracks by artist/title
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/history/current/tracks:
+    get: {summary: Current session history with playedAtIso, responses: {"200": {description: OK}}}
+  /v1/tracks/{id}:
+    get:
+      summary: Track detail
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK, content: {application/json: {schema: {$ref: "#/components/schemas/TrackDto"}}}}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/tracks/{id}/cues:
+    get:
+      summary: Cue/loop/intro/outro markers (seconds)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/tracks/{id}/cover:
+    get:
+      summary: Cover art (JPEG, max 512px edge)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK, content: {image/jpeg: {}}}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/tracks/{id}/waveform/summary:
+    get:
+      summary: MXWF v1 binary waveform summary (see 03-api-spec.md for layout)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: OK, content: {application/octet-stream: {}}}
+        "202": {description: Analysis pending — retry later}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/pair:
+    post:
+      summary: Open a 60s pairing window (loopback only)
+      responses: {"200": {description: code + qr payload}, "403": {description: not loopback}}
+  /v1/pair/claim:
+    post:
+      summary: Claim a pairing code for a long-lived token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string}
+                deviceName: {type: string}
+                readOnly: {type: boolean}
+      responses:
+        "200": {description: token (shown once)}
+        "401": {description: bad code / no window}
+        "429": {description: too many attempts}
+  /v1/pair/code:
+    get:
+      summary: The session pairing code (loopback only)
+      responses: {"200": {description: OK}, "403": {description: not loopback}}
+  /v1/pair/devices:
+    get: {summary: List token devices (loopback only), responses: {"200": {description: OK}}}
+  /v1/pair/devices/{id}:
+    delete:
+      summary: Revoke a token device (loopback only)
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: OK}, "404": {$ref: "#/components/responses/NotFound"}}
