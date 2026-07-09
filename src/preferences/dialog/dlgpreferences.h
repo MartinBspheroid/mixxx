@@ -27,6 +27,11 @@ class ScreensaverManager;
 namespace skin {
 class SkinLoader;
 } // namespace skin
+#ifdef __COMPANION__
+namespace companion {
+class CompanionService;
+} // namespace companion
+#endif
 } // namespace mixxx
 
 class DlgPreferences : public QDialog, public Ui::DlgPreferencesDlg {
@@ -53,7 +58,12 @@ class DlgPreferences : public QDialog, public Ui::DlgPreferencesDlg {
             std::shared_ptr<VinylControlManager> pVCManager,
             std::shared_ptr<EffectsManager> pEffectsManager,
             std::shared_ptr<SettingsManager> pSettingsManager,
-            std::shared_ptr<Library> pLibrary);
+            std::shared_ptr<Library> pLibrary
+#ifdef __COMPANION__
+            ,
+            mixxx::companion::CompanionService* pCompanionService = nullptr
+#endif
+    );
     virtual ~DlgPreferences();
 
     void addPageWidget(const PreferencesPage& page,

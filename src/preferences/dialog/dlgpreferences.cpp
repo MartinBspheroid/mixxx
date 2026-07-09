@@ -37,6 +37,9 @@
 #ifdef __BROADCAST__
 #include "preferences/dialog/dlgprefbroadcast.h"
 #endif // __BROADCAST__
+#ifdef __COMPANION__
+#include "preferences/dialog/dlgprefcompanion.h"
+#endif // __COMPANION__
 
 #include "preferences/dialog/dlgprefbeats.h"
 #include "preferences/dialog/dlgprefkey.h"
@@ -59,7 +62,12 @@ DlgPreferences::DlgPreferences(
         std::shared_ptr<VinylControlManager> pVCManager,
         std::shared_ptr<EffectsManager> pEffectsManager,
         std::shared_ptr<SettingsManager> pSettingsManager,
-        std::shared_ptr<Library> pLibrary)
+        std::shared_ptr<Library> pLibrary
+#ifdef __COMPANION__
+        ,
+        mixxx::companion::CompanionService* pCompanionService
+#endif
+        )
         : m_allPages(),
           m_pConfig(pSettingsManager->settings()),
           m_pageSizeHint(QSize(0, 0)) {
@@ -209,6 +217,14 @@ DlgPreferences::DlgPreferences(
             tr("Live Broadcasting"),
             "ic_preferences_broadcast.svg");
 #endif // __BROADCAST__
+
+#ifdef __COMPANION__
+    addPageWidget(PreferencesPage(
+                          new DlgPrefCompanion(this, m_pConfig, pCompanionService),
+                          new QTreeWidgetItem(contentsTreeWidget, QTreeWidgetItem::Type)),
+            tr("Companion API"),
+            "ic_preferences_broadcast.svg");
+#endif // __COMPANION__
 
     addPageWidget(PreferencesPage(
                           new DlgPrefRecord(this, m_pConfig),

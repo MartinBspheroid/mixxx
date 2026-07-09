@@ -11,6 +11,12 @@ lands here in the same PR as the code.
 - Path-versioned: `/v1/...`, `/ws/v1`. Breaking change ⇒ `/v2`.
 - Additive fields may appear at any time; clients must ignore unknown fields.
 - `GET /v1/status` reports `apiVersion` (integer, currently `1`).
+- **HTTP is one request per connection** (`Connection: close`); HTTP keep-alive
+  is intentionally not implemented. All high-frequency state streams over the
+  single long-lived `/ws/v1` WebSocket, so HTTP is only occasional
+  request/response where connection churn on a LAN is negligible. Clients that
+  need many small requests at once (e.g. a grid of covers) should use parallel
+  connections.
 
 ## Authentication
 

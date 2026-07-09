@@ -4996,6 +4996,9 @@ if(COMPANION_API)
       src/companion/trackserializer.h
       src/companion/waveformmxwf.cpp
       src/companion/waveformmxwf.h
+      src/preferences/dialog/dlgprefcompanion.cpp
+      src/preferences/dialog/dlgprefcompanion.h
+      src/preferences/dialog/dlgprefcompaniondlg.ui
   )
   target_compile_definitions(mixxx-lib PUBLIC __COMPANION__)
 endif()

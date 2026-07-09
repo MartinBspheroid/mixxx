@@ -46,6 +46,24 @@ class CompanionService : public QObject {
     /// Stop the service and join the worker thread. Idempotent; safe if never
     /// started.
     void stop();
+    /// Stop then start, so config changes (enable/port/LAN) take effect.
+    void restart();
+
+    /// The current session pairing code (empty when not running). Main-thread
+    /// safe: generated here before the worker thread spins up.
+    QString sessionCode() const {
+        return m_sessionCode;
+    }
+    /// True while the service is running (listening).
+    bool isRunning() const {
+        return m_running;
+    }
+    /// Generate a fresh session code and push it to the running server.
+    void regenerateSessionCode();
+
+  signals:
+    /// Emitted after start/stop/regenerate so the Preferences page can refresh.
+    void stateChanged();
 
   public slots:
     /// Run a library search on the main thread and return SearchResult JSON.
@@ -103,6 +121,7 @@ class CompanionService : public QObject {
     PlayerManager* m_pPlayerManager;
     TrackCollectionManager* m_pTrackCollectionManager;
     Library* m_pLibrary;
+    QString m_sessionCode;
     QPointer<QAbstractItemModel> m_pLibraryModel; ///< active library view model
     QList<QMetaObject::Connection> m_libraryModelConnections;
     QJsonObject m_pendingLibraryChanged; ///< coalesced library.changed payload

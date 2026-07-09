@@ -53,6 +53,7 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
         int numDecks,
         QObject* pQueryHandler,
         const QString& pairedTokensJson,
+        const QString& sessionCode,
         QObject* parent)
         : QObject(parent),
           m_bindAddress(std::move(bindAddress)),
@@ -66,6 +67,12 @@ CompanionServer::CompanionServer(QHostAddress bindAddress,
           m_pWsServer(nullptr),
           m_pPublisher(nullptr) {
     m_pairing.loadTokens(pairedTokensJson);
+    m_pairing.setSessionCode(sessionCode);
+}
+
+void CompanionServer::setSessionCode(const QString& code) {
+    m_pairing.setSessionCode(code);
+    kLogger.info() << "Companion pairing code regenerated:" << code;
 }
 
 CompanionServer::~CompanionServer() = default;
@@ -115,9 +122,9 @@ void CompanionServer::initialize() {
     m_pPublisher->setDecks(m_numDecks);
     m_pPublisher->start();
 
-    // The session pairing code: valid for the whole session, full control
-    // scope. This is what the user types on the phone — keep it obvious.
-    m_pairing.setSessionCode(PairingManager::makeCode());
+    // The session pairing code (generated on the main thread and passed in) is
+    // valid for the whole session with full control scope — what the user types
+    // on the phone. Log it prominently so it is obvious.
     kLogger.info() << "=====================================";
     kLogger.info() << "Companion pairing code:" << m_pairing.sessionCode();
     kLogger.info() << "=====================================";

@@ -46,6 +46,7 @@ class CompanionServer : public QObject {
             int numDecks,
             QObject* pQueryHandler,
             const QString& pairedTokensJson,
+            const QString& sessionCode,
             QObject* parent = nullptr);
     ~CompanionServer() override;
 
@@ -55,6 +56,9 @@ class CompanionServer : public QObject {
     void initialize();
     /// Stop accepting connections, disconnect clients and free listeners.
     void shutdown();
+    /// Replace the session pairing code (invoked from the main thread when the
+    /// user regenerates it in Preferences).
+    void setSessionCode(const QString& code);
 
     /// A deck loaded a track. `track` is the already-serialized TrackDto, built
     /// on the main thread; `generation` is the deck's load counter.

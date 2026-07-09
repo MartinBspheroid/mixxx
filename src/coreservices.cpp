@@ -911,7 +911,12 @@ std::shared_ptr<QDialog> CoreServices::makeDlgPreferences() const {
             getVinylControlManager(),
             getEffectsManager(),
             getSettingsManager(),
-            getLibrary());
+            getLibrary()
+#ifdef __COMPANION__
+            ,
+            m_pCompanionService.get()
+#endif
+    );
     return pDlgPreferences;
 }
 

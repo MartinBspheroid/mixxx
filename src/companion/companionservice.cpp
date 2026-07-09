@@ -107,6 +107,10 @@ void CompanionService::start() {
 
     const int numDecks = m_pPlayerManager->numberOfDecks();
 
+    // Generate the session pairing code here (main thread) so it is readable by
+    // the Preferences page without touching the worker thread.
+    m_sessionCode = PairingManager::makeCode();
+
     m_pThread = new QThread();
     m_pThread->setObjectName(QStringLiteral("CompanionAPI"));
 
@@ -116,7 +120,8 @@ void CompanionService::start() {
             m_appVersion,
             numDecks,
             this, // query handler (runLibrarySearch runs on this main thread)
-            settings.pairedTokens());
+            settings.pairedTokens(),
+            m_sessionCode);
     m_pServer->moveToThread(m_pThread);
 
     connect(this,
@@ -221,6 +226,24 @@ void CompanionService::start() {
 
     m_running = true;
     kLogger.info() << "Companion API started with" << numDecks << "decks";
+    emit stateChanged();
+}
+
+void CompanionService::restart() {
+    stop();
+    start();
+}
+
+void CompanionService::regenerateSessionCode() {
+    if (!m_running || !m_pServer) {
+        return;
+    }
+    m_sessionCode = PairingManager::makeCode();
+    QMetaObject::invokeMethod(m_pServer,
+            "setSessionCode",
+            Qt::QueuedConnection,
+            Q_ARG(QString, m_sessionCode));
+    emit stateChanged();
 }
 
 void CompanionService::stop() {
@@ -258,7 +281,9 @@ void CompanionService::stop() {
         delete m_pThread;
         m_pThread = nullptr;
     }
+    m_sessionCode.clear();
     kLogger.info() << "Companion API stopped";
+    emit stateChanged();
 }
 
 void CompanionService::connectDecks(int fromIndex, int toIndex) {
