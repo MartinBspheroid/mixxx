@@ -588,6 +588,239 @@ void CompanionService::onAutoDjQueueRequested(int trackId) {
     kLogger.debug() << "autodj queue: appended track" << trackId;
 }
 
+namespace {
+// Shared SELECT column list + row serialization for playlist/crate/history
+// track listings (matches TrackSearchRow in the spec).
+const char* kTrackRowColumns =
+        "library.id, artist, title, album, bpm, key, duration, rating";
+
+QJsonObject trackRowFromQuery(const QSqlQuery& query) {
+    QJsonObject row;
+    row.insert(QStringLiteral("id"), query.value(0).toInt());
+    row.insert(QStringLiteral("artist"), query.value(1).toString());
+    row.insert(QStringLiteral("title"), query.value(2).toString());
+    const QString album = query.value(3).toString();
+    if (!album.isEmpty()) {
+        row.insert(QStringLiteral("album"), album);
+    }
+    const double bpm = query.value(4).toDouble();
+    if (bpm > 0.0) {
+        row.insert(QStringLiteral("bpm"), bpm);
+    }
+    const QString key = query.value(5).toString();
+    if (!key.isEmpty()) {
+        row.insert(QStringLiteral("key"), key);
+    }
+    row.insert(QStringLiteral("durationSeconds"), query.value(6).toDouble());
+    const int rating = query.value(7).toInt();
+    if (rating > 0) {
+        row.insert(QStringLiteral("rating"), rating);
+    }
+    return row;
+}
+
+QByteArray compactJson(const QJsonObject& object) {
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+} // namespace
+
+QByteArray CompanionService::getPlaylists() {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    QSqlQuery query(m_pTrackCollectionManager->internalCollection()->database());
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+            "SELECT id, name, "
+            "  (SELECT COUNT(*) FROM PlaylistTracks "
+            "   WHERE PlaylistTracks.playlist_id = Playlists.id) "
+            "FROM Playlists WHERE hidden = 0 ORDER BY position"));
+    QJsonArray playlists;
+    if (query.exec()) {
+        while (query.next()) {
+            QJsonObject playlist;
+            playlist.insert(QStringLiteral("id"), query.value(0).toInt());
+            playlist.insert(QStringLiteral("name"), query.value(1).toString());
+            playlist.insert(
+                    QStringLiteral("trackCount"), query.value(2).toInt());
+            playlists.append(playlist);
+        }
+    } else {
+        kLogger.warning() << "playlists query failed:"
+                          << query.lastError().text();
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("playlists"), playlists);
+    return compactJson(root);
+}
+
+QByteArray CompanionService::getPlaylistTracks(int playlistId) {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    QSqlDatabase db =
+            m_pTrackCollectionManager->internalCollection()->database();
+    // Distinguish "no such playlist" (-> 404) from "empty playlist".
+    QSqlQuery existsQuery(db);
+    existsQuery.prepare(QStringLiteral(
+            "SELECT name FROM Playlists WHERE id = :id AND hidden = 0"));
+    existsQuery.bindValue(QStringLiteral(":id"), playlistId);
+    if (!existsQuery.exec() || !existsQuery.next()) {
+        return QByteArray();
+    }
+    const QString name = existsQuery.value(0).toString();
+
+    QSqlQuery query(db);
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+                          "SELECT %1, PlaylistTracks.position "
+                          "FROM PlaylistTracks "
+                          "INNER JOIN library ON PlaylistTracks.track_id = library.id "
+                          "INNER JOIN track_locations "
+                          "ON library.location = track_locations.id "
+                          "WHERE PlaylistTracks.playlist_id = :id "
+                          "AND library.mixxx_deleted = 0 "
+                          "AND track_locations.fs_deleted = 0 "
+                          "ORDER BY PlaylistTracks.position")
+                          .arg(QLatin1String(kTrackRowColumns)));
+    query.bindValue(QStringLiteral(":id"), playlistId);
+    QJsonArray tracks;
+    if (query.exec()) {
+        while (query.next()) {
+            QJsonObject row = trackRowFromQuery(query);
+            row.insert(QStringLiteral("position"), query.value(8).toInt());
+            tracks.append(row);
+        }
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("id"), playlistId);
+    root.insert(QStringLiteral("name"), name);
+    root.insert(QStringLiteral("tracks"), tracks);
+    return compactJson(root);
+}
+
+QByteArray CompanionService::getCrates() {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    QSqlQuery query(m_pTrackCollectionManager->internalCollection()->database());
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+            "SELECT id, name, "
+            "  (SELECT COUNT(*) FROM crate_tracks "
+            "   WHERE crate_tracks.crate_id = crates.id) "
+            "FROM crates ORDER BY name"));
+    QJsonArray crates;
+    if (query.exec()) {
+        while (query.next()) {
+            QJsonObject crate;
+            crate.insert(QStringLiteral("id"), query.value(0).toInt());
+            crate.insert(QStringLiteral("name"), query.value(1).toString());
+            crate.insert(QStringLiteral("trackCount"), query.value(2).toInt());
+            crates.append(crate);
+        }
+    } else {
+        kLogger.warning() << "crates query failed:" << query.lastError().text();
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("crates"), crates);
+    return compactJson(root);
+}
+
+QByteArray CompanionService::getCrateTracks(int crateId) {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    QSqlDatabase db =
+            m_pTrackCollectionManager->internalCollection()->database();
+    QSqlQuery existsQuery(db);
+    existsQuery.prepare(
+            QStringLiteral("SELECT name FROM crates WHERE id = :id"));
+    existsQuery.bindValue(QStringLiteral(":id"), crateId);
+    if (!existsQuery.exec() || !existsQuery.next()) {
+        return QByteArray();
+    }
+    const QString name = existsQuery.value(0).toString();
+
+    QSqlQuery query(db);
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+                          "SELECT %1 FROM crate_tracks "
+                          "INNER JOIN library ON crate_tracks.track_id = library.id "
+                          "INNER JOIN track_locations "
+                          "ON library.location = track_locations.id "
+                          "WHERE crate_tracks.crate_id = :id "
+                          "AND library.mixxx_deleted = 0 "
+                          "AND track_locations.fs_deleted = 0 "
+                          "ORDER BY artist, title")
+                          .arg(QLatin1String(kTrackRowColumns)));
+    query.bindValue(QStringLiteral(":id"), crateId);
+    QJsonArray tracks;
+    if (query.exec()) {
+        while (query.next()) {
+            tracks.append(trackRowFromQuery(query));
+        }
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("id"), crateId);
+    root.insert(QStringLiteral("name"), name);
+    root.insert(QStringLiteral("tracks"), tracks);
+    return compactJson(root);
+}
+
+QByteArray CompanionService::getHistoryTracks() {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    QSqlDatabase db =
+            m_pTrackCollectionManager->internalCollection()->database();
+    // The newest set-log playlist is the current session's history.
+    QSqlQuery latestQuery(db);
+    latestQuery.prepare(QStringLiteral(
+            "SELECT id, name FROM Playlists WHERE hidden = 2 "
+            "ORDER BY id DESC LIMIT 1"));
+    if (!latestQuery.exec() || !latestQuery.next()) {
+        // No history yet this session: empty but valid.
+        QJsonObject root;
+        root.insert(QStringLiteral("tracks"), QJsonArray());
+        return compactJson(root);
+    }
+    const int playlistId = latestQuery.value(0).toInt();
+    const QString name = latestQuery.value(1).toString();
+
+    QSqlQuery query(db);
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+                          "SELECT %1, PlaylistTracks.position, "
+                          "PlaylistTracks.pl_datetime_added "
+                          "FROM PlaylistTracks "
+                          "INNER JOIN library ON PlaylistTracks.track_id = library.id "
+                          "INNER JOIN track_locations "
+                          "ON library.location = track_locations.id "
+                          "WHERE PlaylistTracks.playlist_id = :id "
+                          "ORDER BY PlaylistTracks.position")
+                          .arg(QLatin1String(kTrackRowColumns)));
+    query.bindValue(QStringLiteral(":id"), playlistId);
+    QJsonArray tracks;
+    if (query.exec()) {
+        while (query.next()) {
+            QJsonObject row = trackRowFromQuery(query);
+            row.insert(QStringLiteral("position"), query.value(8).toInt());
+            const QDateTime playedAt = query.value(9).toDateTime();
+            if (playedAt.isValid()) {
+                row.insert(QStringLiteral("playedAtIso"),
+                        playedAt.toString(Qt::ISODate));
+            }
+            tracks.append(row);
+        }
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("id"), playlistId);
+    root.insert(QStringLiteral("name"), name);
+    root.insert(QStringLiteral("tracks"), tracks);
+    return compactJson(root);
+}
+
 QByteArray CompanionService::getTrackCover(int trackId) {
     // Main thread (Track + file access). Returns JPEG bytes or empty for 404.
     VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {

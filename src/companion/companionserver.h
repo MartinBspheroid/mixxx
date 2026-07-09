@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -153,6 +154,10 @@ class CompanionServer : public QObject {
     QWebSocketServer* m_pWsServer;
     DeckStatePublisher* m_pPublisher;
     QList<QWebSocket*> m_clients;
+    /// Topic subscriptions per client; default is {"decks"} (spec). Events are
+    /// routed by topic: library.* -> "library", everything else -> "decks".
+    QHash<QWebSocket*, QSet<QString>> m_clientTopics;
+    void sendLibraryReplay(QWebSocket* pClient);
     QElapsedTimer m_uptime;
 
     struct DeckSnapshot {

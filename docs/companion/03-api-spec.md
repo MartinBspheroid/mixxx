@@ -58,8 +58,11 @@ preflights are answered, so browser dashboard clients work cross-origin.
 | `GET /v1/pair/code` | session pairing code (loopback only) |
 | `POST /v1/pair`, `POST /v1/pair/claim` | pairing window / claim token (see Authentication) |
 | `GET/DELETE /v1/pair/devices[/:id]` | manage long-lived token devices (loopback only) |
-| `GET /v1/playlists`, `/v1/playlists/:id/tracks` | Phase 3 |
-| `GET /v1/crates`, `/v1/crates/:id/tracks` | Phase 3 |
+| `GET /v1/playlists` | `{playlists:[{id,name,trackCount}]}` (hidden system playlists excluded) |
+| `GET /v1/playlists/:id/tracks` | `{id,name,tracks:[TrackSearchRow + position]}` in playlist order |
+| `GET /v1/crates` | `{crates:[{id,name,trackCount}]}` |
+| `GET /v1/crates/:id/tracks` | `{id,name,tracks:[TrackSearchRow]}` by artist/title |
+| `GET /v1/history/current/tracks` | current session history: `{id,name,tracks:[... + position, playedAtIso]}` |
 
 ### Actions (T07, POST, JSON body, whitelist only)
 
@@ -121,6 +124,12 @@ text except waveform blobs (HTTP-only in v1 — see D6/D8).
 { "type": "subscribe", "topics": ["decks", "library"] }   // default: ["decks"]
 { "type": "ping", "t": 12345 }                            // server echoes "pong"
 ```
+
+Topic routing (enforced): `library.*` events go only to clients subscribed to
+`"library"`; everything else (`deck.*`, `decks.config`, `master.tick`) is the
+`"decks"` topic. Subscribing to `"library"` late triggers an immediate replay
+of the current `library.view` + `library.cursor`. Unknown topics are ignored;
+an empty topic list resets to the default.
 
 ### Server → client events
 

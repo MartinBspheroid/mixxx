@@ -146,6 +146,7 @@ void CompanionServer::shutdown() {
         pClient->close();
     }
     m_clients.clear();
+    m_clientTopics.clear();
     if (m_pWsServer) {
         // Deletes any QWebSockets it still parents (including m_clients above).
         m_pWsServer->close();
@@ -215,6 +216,7 @@ void CompanionServer::onWebSocketConnection() {
     while (m_pWsServer && m_pWsServer->hasPendingConnections()) {
         QWebSocket* pClient = m_pWsServer->nextPendingConnection();
         m_clients.append(pClient);
+        m_clientTopics.insert(pClient, {QStringLiteral("decks")});
         connect(pClient,
                 &QWebSocket::textMessageReceived,
                 this,
@@ -235,6 +237,7 @@ void CompanionServer::onClientDisconnected() {
         return;
     }
     m_clients.removeAll(pClient);
+    m_clientTopics.remove(pClient);
     pClient->deleteLater();
     kLogger.debug() << "Companion client disconnected;" << m_clients.size()
                     << "remaining";
@@ -257,9 +260,45 @@ void CompanionServer::onClientTextMessage(const QString& message) {
         pong.insert(QStringLiteral("t"), obj.value(QStringLiteral("t")));
         pClient->sendTextMessage(
                 QString::fromUtf8(QJsonDocument(pong).toJson(QJsonDocument::Compact)));
+        return;
     }
-    // "hello" and "subscribe" are accepted but need no action in v1: every
-    // client receives every deck event.
+    if (type == QLatin1String("hello")) {
+        const int protocol = obj.value(QStringLiteral("protocol")).toInt(1);
+        if (protocol != 1) {
+            kLogger.warning()
+                    << "Companion client"
+                    << obj.value(QStringLiteral("clientName")).toString()
+                    << "speaks unsupported protocol" << protocol;
+        }
+        return;
+    }
+    if (type == QLatin1String("subscribe")) {
+        // Topics: "decks" (deck.*, decks.config, master.tick) and "library"
+        // (library.*). Default is decks-only per the spec.
+        QSet<QString> topics;
+        const QJsonArray requested =
+                obj.value(QStringLiteral("topics")).toArray();
+        for (const QJsonValue& value : requested) {
+            const QString topic = value.toString();
+            if (topic == QLatin1String("decks") ||
+                    topic == QLatin1String("library")) {
+                topics.insert(topic);
+            }
+        }
+        if (topics.isEmpty()) {
+            topics.insert(QStringLiteral("decks"));
+        }
+        const bool addedLibrary =
+                topics.contains(QStringLiteral("library")) &&
+                !m_clientTopics.value(pClient).contains(
+                        QStringLiteral("library"));
+        m_clientTopics.insert(pClient, topics);
+        if (addedLibrary) {
+            // Late subscription: catch the client up on the current view.
+            sendLibraryReplay(pClient);
+        }
+        return;
+    }
 }
 
 void CompanionServer::onTickReady(int deck, const QJsonObject& partialTick) {
@@ -359,14 +398,8 @@ void CompanionServer::sendReplay(QWebSocket* pClient) {
         pClient->sendTextMessage(QString::fromUtf8(
                 QJsonDocument(config).toJson(QJsonDocument::Compact)));
     }
-    if (!m_lastLibraryView.isEmpty()) {
-        pClient->sendTextMessage(QString::fromUtf8(
-                QJsonDocument(m_lastLibraryView).toJson(QJsonDocument::Compact)));
-    }
-    if (!m_lastLibraryCursor.isEmpty()) {
-        pClient->sendTextMessage(QString::fromUtf8(QJsonDocument(
-                m_lastLibraryCursor).toJson(QJsonDocument::Compact)));
-    }
+    // Library replay is sent when a client subscribes to the "library" topic
+    // (default subscription is decks-only per the spec).
     for (auto it = m_deckSnapshots.constBegin(); it != m_deckSnapshots.constEnd();
             ++it) {
         if (!it->loaded) {
@@ -381,15 +414,34 @@ void CompanionServer::sendReplay(QWebSocket* pClient) {
     }
 }
 
+void CompanionServer::sendLibraryReplay(QWebSocket* pClient) {
+    if (!m_lastLibraryView.isEmpty()) {
+        pClient->sendTextMessage(QString::fromUtf8(
+                QJsonDocument(m_lastLibraryView).toJson(QJsonDocument::Compact)));
+    }
+    if (!m_lastLibraryCursor.isEmpty()) {
+        pClient->sendTextMessage(QString::fromUtf8(QJsonDocument(
+                m_lastLibraryCursor).toJson(QJsonDocument::Compact)));
+    }
+}
+
 void CompanionServer::broadcast(const QJsonObject& event, bool droppable) {
     if (m_clients.isEmpty()) {
         return;
     }
     const QString payload = QString::fromUtf8(
             QJsonDocument(event).toJson(QJsonDocument::Compact));
+    const QString topic =
+            event.value(QStringLiteral("type")).toString().startsWith(
+                    QLatin1String("library."))
+            ? QStringLiteral("library")
+            : QStringLiteral("decks");
     // Iterate over a copy: disconnecting a client mutates m_clients.
     const QList<QWebSocket*> clients = m_clients;
     for (QWebSocket* pClient : clients) {
+        if (!m_clientTopics.value(pClient).contains(topic)) {
+            continue;
+        }
         const qint64 buffered = pClient->bytesToWrite();
         if (buffered > kWsHardBufferCap) {
             // The peer stopped draining; cut it loose before we balloon.
@@ -560,6 +612,66 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
             return handleWaveformSummary(trackId);
         }
         return HttpResponse::error(404, "not_found");
+    }
+
+    // Library container listings (playlists / crates / history) — all served
+    // by main-thread SQL via the query handler.
+    const auto blockingJson = [this](const char* member,
+                                      int arg,
+                                      bool hasArg) -> QByteArray {
+        QByteArray json;
+        bool ok = false;
+        if (hasArg) {
+            ok = QMetaObject::invokeMethod(m_pQueryHandler,
+                    member,
+                    Qt::BlockingQueuedConnection,
+                    Q_RETURN_ARG(QByteArray, json),
+                    Q_ARG(int, arg));
+        } else {
+            ok = QMetaObject::invokeMethod(m_pQueryHandler,
+                    member,
+                    Qt::BlockingQueuedConnection,
+                    Q_RETURN_ARG(QByteArray, json));
+        }
+        return ok ? json : QByteArray();
+    };
+    if (request.method == "GET" && segments.size() >= 2 &&
+            segments.at(0) == QLatin1String("v1") &&
+            (segments.at(1) == QLatin1String("playlists") ||
+                    segments.at(1) == QLatin1String("crates"))) {
+        const bool isPlaylist = segments.at(1) == QLatin1String("playlists");
+        if (segments.size() == 2) {
+            const QByteArray json = blockingJson(
+                    isPlaylist ? "getPlaylists" : "getCrates", 0, false);
+            if (json.isEmpty()) {
+                return HttpResponse::error(500, "internal");
+            }
+            return HttpResponse::json(200, json);
+        }
+        if (segments.size() == 4 && segments.at(3) == QLatin1String("tracks")) {
+            bool idOk = false;
+            const int id = segments.at(2).toInt(&idOk);
+            if (!idOk) {
+                return HttpResponse::error(400, "bad_request", "invalid id");
+            }
+            const QByteArray json = blockingJson(
+                    isPlaylist ? "getPlaylistTracks" : "getCrateTracks",
+                    id,
+                    true);
+            if (json.isEmpty()) {
+                return HttpResponse::error(404, "not_found");
+            }
+            return HttpResponse::json(200, json);
+        }
+        return HttpResponse::error(404, "not_found");
+    }
+    if (request.method == "GET" &&
+            request.path == QLatin1String("/v1/history/current/tracks")) {
+        const QByteArray json = blockingJson("getHistoryTracks", 0, false);
+        if (json.isEmpty()) {
+            return HttpResponse::error(500, "internal");
+        }
+        return HttpResponse::json(200, json);
     }
 
     // POST /v1/library/{move,scroll,goto,focus} — remote library navigation

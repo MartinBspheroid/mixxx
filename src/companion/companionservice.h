@@ -66,6 +66,16 @@ class CompanionService : public QObject {
     QByteArray exportWaveformSummary(int trackId);
     /// Load a track's cover art as JPEG, scaled to <=512px (empty if none).
     QByteArray getTrackCover(int trackId);
+    /// List user playlists (hidden system playlists excluded). Main thread.
+    QByteArray getPlaylists();
+    /// Tracks of one playlist, in playlist order (empty if no such playlist).
+    QByteArray getPlaylistTracks(int playlistId);
+    /// List crates. Main thread.
+    QByteArray getCrates();
+    /// Tracks of one crate, by artist/title (empty if no such crate).
+    QByteArray getCrateTracks(int crateId);
+    /// Tracks of the current session-history playlist with played-at times.
+    QByteArray getHistoryTracks();
 
   signals:
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
