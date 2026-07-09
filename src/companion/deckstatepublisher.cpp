@@ -94,6 +94,9 @@ void DeckStatePublisher::onTimeout() {
         const double rate = controlGet(group, "rate_ratio");
         const bool playing = controlGet(group, "play") != 0.0;
         const double vu = controlGet(group, "vu_meter");
+        const bool loopEnabled = controlGet(group, "loop_enabled") != 0.0;
+        const int syncMode = static_cast<int>(controlGet(group, "sync_mode"));
+        const bool keylock = controlGet(group, "keylock") != 0.0;
 
         bool isSeek = false;
         if (sample.loaded && duration > 0.0) {
@@ -109,7 +112,10 @@ void DeckStatePublisher::onTimeout() {
         const bool changed = !sample.loaded ||
                 std::fabs(position - sample.emitPosition) > kPositionEpsilon ||
                 playing != sample.playing ||
-                std::fabs(vu - sample.emitVu) > kVuEpsilon;
+                std::fabs(vu - sample.emitVu) > kVuEpsilon ||
+                loopEnabled != sample.loopEnabled ||
+                syncMode != sample.syncMode ||
+                keylock != sample.keylock;
         const bool keepalive = (nowMs - sample.emitMs) >= kKeepaliveMs;
 
         if (isSeek) {
@@ -131,6 +137,29 @@ void DeckStatePublisher::onTimeout() {
             event.insert(QStringLiteral("rate"), rate);
             event.insert(QStringLiteral("playing"), playing);
             event.insert(QStringLiteral("vu"), vu);
+            event.insert(QStringLiteral("vuLeft"), controlGet(group, "vu_meter_left"));
+            event.insert(QStringLiteral("vuRight"), controlGet(group, "vu_meter_right"));
+            // Beat phase (0..1 within the current beat) for phase meters.
+            event.insert(QStringLiteral("beatDistance"),
+                    controlGet(group, "beat_distance"));
+            // Sync: 0 = off, 1 = follower, 2 = leader.
+            event.insert(QStringLiteral("syncMode"), syncMode);
+            event.insert(QStringLiteral("keylock"), keylock);
+            event.insert(QStringLiteral("loopEnabled"), loopEnabled);
+            if (loopEnabled) {
+                // Loop positions are engine sample positions; normalize to the
+                // same 0..1 domain as playposition so clients can draw the
+                // region directly on the waveform.
+                const double trackSamples = controlGet(group, "track_samples");
+                if (trackSamples > 0.0) {
+                    event.insert(QStringLiteral("loopStart"),
+                            controlGet(group, "loop_start_position") /
+                                    trackSamples);
+                    event.insert(QStringLiteral("loopEnd"),
+                            controlGet(group, "loop_end_position") /
+                                    trackSamples);
+                }
+            }
             emit tickReady(deck, event);
             sample.emitPosition = position;
             sample.emitVu = vu;
@@ -140,6 +169,30 @@ void DeckStatePublisher::onTimeout() {
         sample.loaded = true;
         sample.playing = playing;
         sample.position = position;
+        sample.loopEnabled = loopEnabled;
+        sample.syncMode = syncMode;
+        sample.keylock = keylock;
+    }
+
+    // Master-bus levels (change-gated with a keepalive, droppable downstream).
+    {
+        const QString mainGroup = QStringLiteral("[Main]");
+        const double masterVu = controlGet(mainGroup, "vu_meter");
+        const bool changed =
+                std::fabs(masterVu - m_emitMasterVu) > kVuEpsilon;
+        const bool keepalive = (nowMs - m_masterEmitMs) >= kKeepaliveMs;
+        if (changed || keepalive) {
+            QJsonObject event;
+            event.insert(QStringLiteral("type"), QStringLiteral("master.tick"));
+            event.insert(QStringLiteral("vu"), masterVu);
+            event.insert(QStringLiteral("vuLeft"),
+                    controlGet(mainGroup, "vu_meter_left"));
+            event.insert(QStringLiteral("vuRight"),
+                    controlGet(mainGroup, "vu_meter_right"));
+            emit masterTickReady(event);
+            m_emitMasterVu = masterVu;
+            m_masterEmitMs = nowMs;
+        }
     }
 }
 

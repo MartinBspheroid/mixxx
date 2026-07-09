@@ -13,8 +13,10 @@ class Library;
 class PlayerManager;
 class QAbstractItemModel;
 class TrackCollectionManager;
+class TrackId;
 class TrackModel;
 class QThread;
+class QTimer;
 
 namespace mixxx {
 namespace companion {
@@ -62,6 +64,8 @@ class CompanionService : public QObject {
     /// Export a track's summary waveform as an MXWF v1 blob (empty if the
     /// completed summary is unavailable). All main thread.
     QByteArray exportWaveformSummary(int trackId);
+    /// Load a track's cover art as JPEG, scaled to <=512px (empty if none).
+    QByteArray getTrackCover(int trackId);
 
   signals:
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
@@ -69,6 +73,7 @@ class CompanionService : public QObject {
     void numberOfDecksChangedEvent(int numDecks);
     void libraryViewEvent(const QJsonObject& event);
     void libraryCursorEvent(const QJsonObject& event);
+    void libraryChangedEvent(const QJsonObject& event);
 
   private:
     void connectDecks(int fromIndex, int toIndex);
@@ -80,6 +85,8 @@ class CompanionService : public QObject {
     void onPersistTokens(const QString& tokensJson);
     void onShowTrackModel(QAbstractItemModel* pModel);
     void onTrackSelected(const TrackPointer& pTrack);
+    void emitLibraryView();
+    void queueLibraryChanged(const char* field, const QSet<TrackId>& trackIds);
     QJsonObject buildCursorWindow(TrackModel* pTrackModel, int cursorRow) const;
 
     UserSettingsPointer m_pConfig;
@@ -87,6 +94,9 @@ class CompanionService : public QObject {
     TrackCollectionManager* m_pTrackCollectionManager;
     Library* m_pLibrary;
     QPointer<QAbstractItemModel> m_pLibraryModel; ///< active library view model
+    QList<QMetaObject::Connection> m_libraryModelConnections;
+    QJsonObject m_pendingLibraryChanged; ///< coalesced library.changed payload
+    QTimer* m_pLibraryChangedTimer = nullptr;
     const QString m_appVersion;
 
     QThread* m_pThread;

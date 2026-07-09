@@ -33,7 +33,11 @@ lands here in the same PR as the code.
 { "error": { "code": "not_found", "message": "no track 1234" } }
 ```
 Codes: `bad_request`, `unauthorized`, `not_found`, `analysis_pending`,
-`action_not_allowed`, `internal`.
+`action_not_allowed`, `too_many_attempts` (429 — per-IP auth throttle after
+repeated failures; exponential lockout), `internal`.
+
+CORS: all responses carry `Access-Control-Allow-Origin: *` and `OPTIONS`
+preflights are answered, so browser dashboard clients work cross-origin.
 
 ---
 
@@ -47,9 +51,13 @@ Codes: `bad_request`, `unauthorized`, `not_found`, `analysis_pending`,
 | `GET /v1/decks` | array of DeckStateDto (current snapshot, all decks) |
 | `GET /v1/decks/:deck` | DeckStateDto (deck is 1-based int) |
 | `GET /v1/tracks/:id` | TrackDto |
-| `GET /v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult |
+| `GET /v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult (fixed order: artist, title — may differ from the desktop's sort) |
 | `GET /v1/tracks/:id/waveform/summary` | binary MXWF blob (T09) |
 | `GET /v1/tracks/:id/cues` | cue/loop markers (T09) |
+| `GET /v1/tracks/:id/cover` | cover art JPEG, ≤512px (404 if none) |
+| `GET /v1/pair/code` | session pairing code (loopback only) |
+| `POST /v1/pair`, `POST /v1/pair/claim` | pairing window / claim token (see Authentication) |
+| `GET/DELETE /v1/pair/devices[/:id]` | manage long-lived token devices (loopback only) |
 | `GET /v1/playlists`, `/v1/playlists/:id/tracks` | Phase 3 |
 | `GET /v1/crates`, `/v1/crates/:id/tracks` | Phase 3 |
 
@@ -83,11 +91,20 @@ file operations, scratching — the phone is not a performance surface.
   "version": "2.6-beta (companion fork)",
   "apiVersion": 1,
   "numDecks": 4,
+  "visibleDecks": 2,
   "libraryReady": true,
   "uptimeMs": 123456,
   "clients": 1,
-  "auth": "open-loopback"
+  "auth": "open-loopback",
+  "pairedDevices": false
 }
+```
+
+`clients` counts live WebSocket connections (including session-code clients).
+`pairedDevices` refers only to long-lived *token* devices — a phone connected
+via the session code intentionally does not appear there.
+
+```
 ```
 
 ---
@@ -133,7 +150,12 @@ current state so late joiners are instantly correct):
 }
 ```
 
-`deck.tick` — 10–20 Hz while state changes, ≥1 Hz keepalive per loaded deck:
+`deck.tick` — 10–20 Hz while state changes, ≥1 Hz keepalive per loaded deck.
+`rate` is the playback **ratio** (1.0 = original tempo; ±6% pitch ⇒ 0.94–1.06).
+`beatDistance` is the phase within the current beat (0..1) for phase meters.
+`syncMode`: 0 = off, 1 = follower, 2 = leader. `loopStart`/`loopEnd` (present
+only while `loopEnabled`) are normalized 0..1 like `playposition`, so clients
+can draw the loop region directly on the waveform:
 
 ```json
 {
@@ -146,8 +168,23 @@ current state so late joiners are instantly correct):
   "rate": 1.0,
   "playing": true,
   "vu": 0.74,
+  "vuLeft": 0.71,
+  "vuRight": 0.74,
+  "beatDistance": 0.25,
+  "syncMode": 0,
+  "keylock": true,
+  "loopEnabled": true,
+  "loopStart": 0.41,
+  "loopEnd": 0.45,
   "serverTimeMs": 182934701
 }
+```
+
+`master.tick` — master-bus levels, change-gated at the tick cadence:
+
+```json
+{ "type": "master.tick", "vu": 0.8, "vuLeft": 0.78, "vuRight": 0.8,
+  "serverTimeMs": 182934701 }
 ```
 
 `deck.seek` — immediate, out-of-band on jumps (hotcue, needle drop, beatjump):

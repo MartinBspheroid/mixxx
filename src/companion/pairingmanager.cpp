@@ -8,6 +8,20 @@
 
 namespace {
 constexpr int kMaxClaimAttempts = 5;
+
+// Length-leaking but content-constant-time equality: comparison time does not
+// depend on how many leading characters match.
+bool constantTimeEquals(const QByteArray& a, const QByteArray& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    unsigned char diff = 0;
+    for (int i = 0; i < a.size(); ++i) {
+        diff |= static_cast<unsigned char>(a.at(i)) ^
+                static_cast<unsigned char>(b.at(i));
+    }
+    return diff == 0;
+}
 } // namespace
 
 namespace mixxx {
@@ -127,7 +141,8 @@ PairingManager::AuthResult PairingManager::authorize(
     }
     // The session pairing code is the primary credential: full control scope,
     // valid for the whole session.
-    if (!m_sessionCode.isEmpty() && token == m_sessionCode.toLatin1()) {
+    if (!m_sessionCode.isEmpty() &&
+            constantTimeEquals(token, m_sessionCode.toLatin1())) {
         return AuthResult::Ok;
     }
     const auto it = m_tokens.constFind(hashToken(token));

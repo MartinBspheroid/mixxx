@@ -39,6 +39,8 @@ class DeckStatePublisher : public QObject {
     /// actually shows (2 when [Skin],show_4decks exists and is off, else
     /// numDecks). Emitted once at startup and on every change.
     void decksConfigChanged(int numDecks, int visibleDecks);
+    /// Master-bus levels (droppable, change-gated): {type:"master.tick",vu,vuLeft,vuRight}.
+    void masterTickReady(const QJsonObject& partialTick);
 
   private slots:
     void onTimeout();
@@ -51,7 +53,12 @@ class DeckStatePublisher : public QObject {
         double emitPosition = 0.0; ///< playposition at last emit (change gate)
         double emitVu = 0.0;   ///< vu at last emit (change gate)
         qint64 emitMs = 0;     ///< clock time of last emit (keepalive)
+        bool loopEnabled = false; ///< loop state at last emit (change gate)
+        int syncMode = 0;         ///< sync mode at last emit (change gate)
+        bool keylock = false;     ///< keylock at last emit (change gate)
     };
+    double m_emitMasterVu = 0.0; ///< master vu at last emit (change gate)
+    qint64 m_masterEmitMs = 0;
 
     const int m_intervalMs;
     int m_numDecks;

@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QUrl>
 
 #include "util/logger.h"
@@ -13,6 +14,10 @@ const mixxx::Logger kLogger("Companion");
 // Guard rail so a hostile or buggy client cannot make us buffer unbounded data
 // before a full request line + headers arrive.
 constexpr int kMaxHeaderBytes = 16 * 1024;
+
+// A connection that has not produced a complete request within this window is
+// aborted (slowloris / FD-exhaustion guard).
+constexpr int kIdleTimeoutMs = 15 * 1000;
 
 QByteArray reasonPhrase(int status) {
     switch (status) {
@@ -75,6 +80,14 @@ HttpConnection::HttpConnection(
             &QTcpSocket::disconnected,
             this,
             &HttpConnection::onDisconnected);
+    // Idle guard: a peer that never completes its request (slowloris) must not
+    // hold this connection open indefinitely.
+    QTimer::singleShot(kIdleTimeoutMs, this, [this]() {
+        if (!m_responded && m_pSocket) {
+            m_pSocket->abort();
+            deleteLater();
+        }
+    });
     // A client may have sent the whole request before we were constructed. Do
     // not process it synchronously here: the caller connects our
     // webSocketUpgradeRequested signal only after construction, so processing
@@ -122,6 +135,7 @@ void HttpConnection::classifyAndDispatch() {
         const QByteArray token = wsRequest.bearerToken();
         const bool fromLoopback =
                 m_pSocket->peerAddress().isLoopback();
+        const QString peer = m_pSocket->peerAddress().toString();
 
         // Hand off to the WebSocket server. Detach so our deleteLater() does not
         // take the socket down with us.
@@ -129,7 +143,8 @@ void HttpConnection::classifyAndDispatch() {
         disconnect(pSocket, nullptr, this, nullptr);
         pSocket->setParent(nullptr);
         m_pSocket = nullptr;
-        emit webSocketUpgradeRequested(pSocket, token, fromLoopback);
+        m_responded = true; // cancel the idle-timeout abort
+        emit webSocketUpgradeRequested(pSocket, token, fromLoopback, peer);
         deleteLater();
         return;
     }
@@ -182,6 +197,17 @@ void HttpConnection::handleHttpRequest() {
         return;
     }
     request.fromLoopback = m_pSocket && m_pSocket->peerAddress().isLoopback();
+    request.peerAddress =
+            m_pSocket ? m_pSocket->peerAddress().toString() : QString();
+
+    // CORS preflight: answer directly so browser dashboard clients work.
+    if (request.method == "OPTIONS") {
+        HttpResponse preflight;
+        preflight.status = 204;
+        preflight.body.clear();
+        writeResponse(preflight);
+        return;
+    }
 
     HttpResponse response;
     if (m_router) {
@@ -251,6 +277,12 @@ void HttpConnection::writeResponse(const HttpResponse& response) {
     out += "\r\n";
     out += "Content-Type: " + response.contentType + "\r\n";
     out += "Content-Length: " + QByteArray::number(response.body.size()) + "\r\n";
+    // CORS: allow browser dashboard clients from any origin. Bearer/code auth
+    // still applies; these headers only unblock the browser's fetch layer.
+    out += "Access-Control-Allow-Origin: *\r\n";
+    out += "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n";
+    out += "Access-Control-Allow-Headers: Authorization, Content-Type\r\n";
+    out += "Access-Control-Max-Age: 86400\r\n";
     // v1 is one-request-per-connection; keeps the parser and lifetime trivial.
     out += "Connection: close\r\n";
     out += "\r\n";

@@ -18,9 +18,13 @@
 #include "companion/trackserializer.h"
 #include "companion/waveformmxwf.h"
 #include <QAbstractItemModel>
+#include <QBuffer>
+#include <QImage>
 
+#include "library/coverart.h"
 #include "library/dao/analysisdao.h"
 #include "library/dao/playlistdao.h"
+#include "library/dao/trackdao.h"
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/searchquery.h"
@@ -148,6 +152,47 @@ void CompanionService::start() {
             &CompanionService::libraryCursorEvent,
             m_pServer,
             &CompanionServer::onLibraryCursor);
+
+    connect(this,
+            &CompanionService::libraryChangedEvent,
+            m_pServer,
+            &CompanionServer::onLibraryChanged);
+
+    // Coarse library invalidation: coalesce TrackDAO change bursts.
+    if (m_pTrackCollectionManager) {
+        if (!m_pLibraryChangedTimer) {
+            m_pLibraryChangedTimer = new QTimer(this);
+            m_pLibraryChangedTimer->setSingleShot(true);
+            m_pLibraryChangedTimer->setInterval(500);
+            connect(m_pLibraryChangedTimer, &QTimer::timeout, this, [this]() {
+                QJsonObject event = m_pendingLibraryChanged;
+                m_pendingLibraryChanged = QJsonObject();
+                event.insert(QStringLiteral("type"),
+                        QStringLiteral("library.changed"));
+                emit libraryChangedEvent(event);
+            });
+        }
+        TrackDAO& trackDao =
+                m_pTrackCollectionManager->internalCollection()->getTrackDAO();
+        connect(&trackDao,
+                &TrackDAO::tracksAdded,
+                this,
+                [this](const QSet<TrackId>& ids) {
+                    queueLibraryChanged("tracksAdded", ids);
+                });
+        connect(&trackDao,
+                &TrackDAO::tracksChanged,
+                this,
+                [this](const QSet<TrackId>& ids) {
+                    queueLibraryChanged("tracksChanged", ids);
+                });
+        connect(&trackDao,
+                &TrackDAO::tracksRemoved,
+                this,
+                [this](const QSet<TrackId>& ids) {
+                    queueLibraryChanged("tracksRemoved", ids);
+                });
+    }
 
     // Library browse HUD: observe the active view and the highlighted track.
     // Both signals are emitted by the library widgets/features and arrive here
@@ -543,11 +588,44 @@ void CompanionService::onAutoDjQueueRequested(int trackId) {
     kLogger.debug() << "autodj queue: appended track" << trackId;
 }
 
-void CompanionService::onShowTrackModel(QAbstractItemModel* pModel) {
-    // Main thread. The user switched the library to a new view (sidebar item,
-    // search result, ...). Remember the model so cursor events can resolve rows.
-    m_pLibraryModel = pModel;
+QByteArray CompanionService::getTrackCover(int trackId) {
+    // Main thread (Track + file access). Returns JPEG bytes or empty for 404.
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
+    if (!id.isValid()) {
+        return QByteArray();
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (!pTrack) {
+        return QByteArray();
+    }
+    const CoverInfo coverInfo = pTrack->getCoverInfoWithLocation();
+    const CoverInfo::LoadedImage loaded = coverInfo.loadImage(pTrack);
+    if (loaded.result != CoverInfo::LoadedImage::Result::Ok ||
+            loaded.image.isNull()) {
+        return QByteArray();
+    }
+    QImage image = loaded.image;
+    // Phones render thumbnails/HUD tiles; cap the size to keep transfers small.
+    constexpr int kMaxEdgePx = 512;
+    if (image.width() > kMaxEdgePx || image.height() > kMaxEdgePx) {
+        image = image.scaled(kMaxEdgePx,
+                kMaxEdgePx,
+                Qt::KeepAspectRatio,
+                Qt::SmoothTransformation);
+    }
+    QByteArray jpeg;
+    QBuffer buffer(&jpeg);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "JPEG", 85);
+    return jpeg;
+}
 
+void CompanionService::emitLibraryView() {
+    QAbstractItemModel* pModel = m_pLibraryModel.data();
     QJsonObject event;
     event.insert(QStringLiteral("type"), QStringLiteral("library.view"));
     auto* pTrackModel = dynamic_cast<TrackModel*>(pModel);
@@ -561,6 +639,54 @@ void CompanionService::onShowTrackModel(QAbstractItemModel* pModel) {
     }
     event.insert(QStringLiteral("rowCount"), pModel ? pModel->rowCount() : 0);
     emit libraryViewEvent(event);
+}
+
+void CompanionService::onShowTrackModel(QAbstractItemModel* pModel) {
+    // Main thread. The user switched the library to a new view (sidebar item,
+    // search result, ...). Remember the model so cursor events can resolve rows.
+    for (const QMetaObject::Connection& connection : m_libraryModelConnections) {
+        disconnect(connection);
+    }
+    m_libraryModelConnections.clear();
+    m_pLibraryModel = pModel;
+
+    if (pModel) {
+        // Searching, sorting, and add/remove all update the model IN PLACE
+        // (model reset / row change) without a new showTrackModel — hook the
+        // model itself so the phone's rowCount/window never go stale.
+        m_libraryModelConnections << connect(pModel,
+                &QAbstractItemModel::modelReset,
+                this,
+                &CompanionService::emitLibraryView);
+        m_libraryModelConnections << connect(pModel,
+                &QAbstractItemModel::rowsInserted,
+                this,
+                &CompanionService::emitLibraryView);
+        m_libraryModelConnections << connect(pModel,
+                &QAbstractItemModel::rowsRemoved,
+                this,
+                &CompanionService::emitLibraryView);
+    }
+    emitLibraryView();
+}
+
+void CompanionService::queueLibraryChanged(
+        const char* field, const QSet<TrackId>& trackIds) {
+    // Coalesce bursts (imports, batch analysis) into one event per 500 ms.
+    constexpr int kMaxIdsPerEvent = 100;
+    QJsonArray ids = m_pendingLibraryChanged
+                             .value(QLatin1String(field))
+                             .toArray();
+    for (const TrackId& id : trackIds) {
+        if (ids.size() >= kMaxIdsPerEvent) {
+            break;
+        }
+        ids.append(id.toVariant().toInt());
+    }
+    m_pendingLibraryChanged.insert(QLatin1String(field), ids);
+    if (m_pLibraryChangedTimer && !m_pLibraryChangedTimer->isActive()) {
+        m_pLibraryChangedTimer->start();
+    }
 }
 
 QJsonObject CompanionService::buildCursorWindow(

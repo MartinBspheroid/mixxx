@@ -21,6 +21,7 @@ struct HttpRequest {
     QHash<QByteArray, QByteArray> headers; ///< lower-cased header name -> value
     QByteArray body;                ///< request body (POST)
     bool fromLoopback = false;      ///< peer is 127.0.0.1/::1 (trusted)
+    QString peerAddress;            ///< peer IP, for auth rate limiting
 
     QByteArray header(const char* name) const {
         return headers.value(QByteArray(name).toLower());
@@ -87,8 +88,10 @@ class HttpConnection : public QObject {
     /// This HttpConnection relinquishes ownership of the socket before emitting.
     /// `token` is the WS `?token=` param (or Authorization bearer); fromLoopback
     /// marks a trusted peer. The receiver enforces auth before upgrading.
-    void webSocketUpgradeRequested(
-            QTcpSocket* pSocket, const QByteArray& token, bool fromLoopback);
+    void webSocketUpgradeRequested(QTcpSocket* pSocket,
+            const QByteArray& token,
+            bool fromLoopback,
+            const QString& peerAddress);
 
   private slots:
     void onReadyRead();

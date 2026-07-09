@@ -68,6 +68,9 @@ class CompanionServer : public QObject {
     /// The library cursor (highlighted track) changed. Broadcast as
     /// `library.cursor`.
     void onLibraryCursor(const QJsonObject& event);
+    /// Coarse library invalidation (tracks added/changed/removed). Broadcast
+    /// as `library.changed`, not replayed.
+    void onLibraryChanged(const QJsonObject& event);
 
   signals:
     /// Emitted after a successful listen(), for logging/status.
@@ -85,8 +88,10 @@ class CompanionServer : public QObject {
 
   private slots:
     void onNewConnection();
-    void onWebSocketUpgradeRequested(
-            QTcpSocket* pSocket, const QByteArray& token, bool fromLoopback);
+    void onWebSocketUpgradeRequested(QTcpSocket* pSocket,
+            const QByteArray& token,
+            bool fromLoopback,
+            const QString& peerAddress);
     void onWebSocketConnection();
     void onClientDisconnected();
     void onClientTextMessage(const QString& message);
@@ -96,6 +101,17 @@ class CompanionServer : public QObject {
     void onDecksConfigChanged(int numDecks, int visibleDecks);
 
   private:
+    /// Per-IP throttle on failed auth: returns true while the peer is locked
+    /// out. Records happen via recordAuthFailure/clearAuthFailures.
+    bool isAuthThrottled(const QString& peer, qint64 nowMs);
+    void recordAuthFailure(const QString& peer, qint64 nowMs);
+    void clearAuthFailures(const QString& peer);
+
+    /// Broadcast an event to all clients. Events marked droppable (ticks,
+    /// cursor updates) are skipped for clients whose send buffer is backed up;
+    /// any client past the hard cap is disconnected.
+    void broadcast(const QJsonObject& event, bool droppable);
+
     HttpResponse route(const HttpRequest& request);
     HttpResponse handlePairing(const QStringList& segments, const HttpRequest& request);
     HttpResponse handleLibraryNav(
@@ -111,7 +127,6 @@ class CompanionServer : public QObject {
             int deck, const QByteArray& action, const HttpRequest& request);
     bool isValidDeck(int deck) const;
     void sendReplay(QWebSocket* pClient);
-    void broadcast(const QJsonObject& event);
     qint64 serverTimeMs() const;
 
     const QHostAddress m_bindAddress;
@@ -123,6 +138,14 @@ class CompanionServer : public QObject {
     QObject* m_pQueryHandler;
     QJsonObject m_lastLibraryView;   ///< latest library.view, for replay
     QJsonObject m_lastLibraryCursor; ///< latest library.cursor, for replay
+
+    struct AuthFailures {
+        int count = 0;
+        qint64 lockedUntilMs = 0;
+        qint64 lastFailureMs = 0;
+    };
+    QHash<QString, AuthFailures> m_authFailures; ///< keyed by peer IP
+    int m_activeHttpConnections = 0;
 
     PairingManager m_pairing;
 

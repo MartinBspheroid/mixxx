@@ -26,6 +26,21 @@ const mixxx::Logger kLogger("Companion");
 // Whole-request cap for the HTTP layer. Our request bodies are tiny JSON
 // objects; anything larger is rejected rather than buffered.
 constexpr qint64 kMaxRequestBytes = 64 * 1024;
+
+// Concurrent HTTP connection cap (FD-exhaustion guard).
+constexpr int kMaxHttpConnections = 64;
+
+// Auth brute-force guard: after this many failures a peer is locked out, with
+// the lockout doubling on continued failures. Failure history expires.
+constexpr int kAuthFailuresBeforeLockout = 5;
+constexpr qint64 kAuthLockoutBaseMs = 30 * 1000;
+constexpr qint64 kAuthFailureExpiryMs = 15 * 60 * 1000;
+constexpr int kMaxTrackedPeers = 1024;
+
+// WebSocket backpressure: past the soft cap droppable events (ticks, cursor)
+// are skipped for that client; past the hard cap the client is disconnected.
+constexpr qint64 kWsSoftBufferCap = 256 * 1024;
+constexpr qint64 kWsHardBufferCap = 2 * 1024 * 1024;
 } // namespace
 
 namespace mixxx {
@@ -89,6 +104,14 @@ void CompanionServer::initialize() {
             &DeckStatePublisher::decksConfigChanged,
             this,
             &CompanionServer::onDecksConfigChanged);
+    connect(m_pPublisher,
+            &DeckStatePublisher::masterTickReady,
+            this,
+            [this](const QJsonObject& partialTick) {
+                QJsonObject event = partialTick;
+                event.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
+                broadcast(event, /*droppable*/ true);
+            });
     m_pPublisher->setDecks(m_numDecks);
     m_pPublisher->start();
 
@@ -135,7 +158,16 @@ void CompanionServer::shutdown() {
 void CompanionServer::onNewConnection() {
     while (m_pTcpServer && m_pTcpServer->hasPendingConnections()) {
         QTcpSocket* pSocket = m_pTcpServer->nextPendingConnection();
+        if (m_activeHttpConnections >= kMaxHttpConnections) {
+            pSocket->abort();
+            pSocket->deleteLater();
+            continue;
+        }
+        m_activeHttpConnections++;
         auto* pConnection = new HttpConnection(pSocket, kMaxRequestBytes, this);
+        connect(pConnection, &QObject::destroyed, this, [this]() {
+            m_activeHttpConnections--;
+        });
         pConnection->setRouter(
                 [this](const HttpRequest& request) { return route(request); });
         connect(pConnection,
@@ -145,18 +177,32 @@ void CompanionServer::onNewConnection() {
     }
 }
 
-void CompanionServer::onWebSocketUpgradeRequested(
-        QTcpSocket* pSocket, const QByteArray& token, bool fromLoopback) {
+void CompanionServer::onWebSocketUpgradeRequested(QTcpSocket* pSocket,
+        const QByteArray& token,
+        bool fromLoopback,
+        const QString& peerAddress) {
+    const qint64 nowMs = serverTimeMs();
+    const bool throttled =
+            !fromLoopback && isAuthThrottled(peerAddress, nowMs);
     // WS clients only receive events (read-only), so control scope is not needed.
-    if (m_pairing.authorize(fromLoopback, token, /*needsControl*/ false) !=
-            PairingManager::AuthResult::Ok) {
-        pSocket->write(
-                "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n"
-                "Connection: close\r\n\r\n");
+    if (throttled ||
+            m_pairing.authorize(fromLoopback, token, /*needsControl*/ false) !=
+                    PairingManager::AuthResult::Ok) {
+        if (!throttled && !fromLoopback) {
+            recordAuthFailure(peerAddress, nowMs);
+        }
+        pSocket->write(throttled
+                        ? "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n"
+                          "Connection: close\r\n\r\n"
+                        : "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n"
+                          "Connection: close\r\n\r\n");
         pSocket->flush();
         pSocket->disconnectFromHost();
         pSocket->deleteLater();
         return;
+    }
+    if (!fromLoopback) {
+        clearAuthFailures(peerAddress);
     }
     if (m_pWsServer) {
         m_pWsServer->handleConnection(pSocket);
@@ -226,7 +272,7 @@ void CompanionServer::onTickReady(int deck, const QJsonObject& partialTick) {
             static_cast<qint64>(it->generation));
     event.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
     it->lastTick = event;
-    broadcast(event);
+    broadcast(event, /*droppable*/ true);
 }
 
 void CompanionServer::onDeckLoaded(
@@ -249,7 +295,7 @@ void CompanionServer::onDeckLoaded(
     snapshot.generation = generation;
     snapshot.loadedEvent = event;
     snapshot.lastTick = QJsonObject();
-    broadcast(event);
+    broadcast(event, /*droppable*/ false);
 }
 
 void CompanionServer::onDeckUnloaded(int deck, quint64 generation) {
@@ -263,7 +309,7 @@ void CompanionServer::onDeckUnloaded(int deck, quint64 generation) {
     event.insert(QStringLiteral("type"), QStringLiteral("deck.unloaded"));
     event.insert(QStringLiteral("deck"), deck);
     event.insert(QStringLiteral("generation"), static_cast<qint64>(generation));
-    broadcast(event);
+    broadcast(event, /*droppable*/ false);
 }
 
 void CompanionServer::onNumberOfDecksChanged(int numDecks) {
@@ -284,18 +330,22 @@ void CompanionServer::onDecksConfigChanged(int numDecks, int visibleDecks) {
     event.insert(QStringLiteral("numDecks"), numDecks);
     event.insert(QStringLiteral("visibleDecks"), visibleDecks);
     event.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
-    broadcast(event);
+    broadcast(event, /*droppable*/ false);
 }
 
 void CompanionServer::onLibraryView(const QJsonObject& event) {
     m_lastLibraryView = event;
     m_lastLibraryCursor = QJsonObject(); // cursor is stale in a new view
-    broadcast(event);
+    broadcast(event, /*droppable*/ false);
 }
 
 void CompanionServer::onLibraryCursor(const QJsonObject& event) {
     m_lastLibraryCursor = event;
-    broadcast(event);
+    broadcast(event, /*droppable*/ true);
+}
+
+void CompanionServer::onLibraryChanged(const QJsonObject& event) {
+    broadcast(event, /*droppable*/ false);
 }
 
 void CompanionServer::sendReplay(QWebSocket* pClient) {
@@ -331,13 +381,29 @@ void CompanionServer::sendReplay(QWebSocket* pClient) {
     }
 }
 
-void CompanionServer::broadcast(const QJsonObject& event) {
+void CompanionServer::broadcast(const QJsonObject& event, bool droppable) {
     if (m_clients.isEmpty()) {
         return;
     }
     const QString payload = QString::fromUtf8(
             QJsonDocument(event).toJson(QJsonDocument::Compact));
-    for (QWebSocket* pClient : std::as_const(m_clients)) {
+    // Iterate over a copy: disconnecting a client mutates m_clients.
+    const QList<QWebSocket*> clients = m_clients;
+    for (QWebSocket* pClient : clients) {
+        const qint64 buffered = pClient->bytesToWrite();
+        if (buffered > kWsHardBufferCap) {
+            // The peer stopped draining; cut it loose before we balloon.
+            kLogger.warning()
+                    << "Companion client too slow (buffered" << buffered
+                    << "bytes); disconnecting";
+            pClient->close(QWebSocketProtocol::CloseCodeGoingAway);
+            continue;
+        }
+        if (droppable && buffered > kWsSoftBufferCap) {
+            // Ticks/cursor updates are refreshed continuously; skipping one for
+            // a congested client is invisible, buffering all of them is not.
+            continue;
+        }
         pClient->sendTextMessage(payload);
     }
 }
@@ -346,13 +412,64 @@ qint64 CompanionServer::serverTimeMs() const {
     return m_uptime.isValid() ? m_uptime.elapsed() : 0;
 }
 
+bool CompanionServer::isAuthThrottled(const QString& peer, qint64 nowMs) {
+    auto it = m_authFailures.find(peer);
+    if (it == m_authFailures.end()) {
+        return false;
+    }
+    if (nowMs - it->lastFailureMs > kAuthFailureExpiryMs) {
+        m_authFailures.erase(it);
+        return false;
+    }
+    return nowMs < it->lockedUntilMs;
+}
+
+void CompanionServer::recordAuthFailure(const QString& peer, qint64 nowMs) {
+    // Bound the tracker so an address-rotating attacker cannot balloon memory.
+    if (m_authFailures.size() >= kMaxTrackedPeers &&
+            !m_authFailures.contains(peer)) {
+        m_authFailures.clear();
+    }
+    AuthFailures& record = m_authFailures[peer];
+    record.count++;
+    record.lastFailureMs = nowMs;
+    if (record.count >= kAuthFailuresBeforeLockout) {
+        // Exponential lockout: 30s, 60s, 120s, ... capped at ~30 min.
+        const int excess =
+                qMin(record.count - kAuthFailuresBeforeLockout, 6);
+        record.lockedUntilMs = nowMs + (kAuthLockoutBaseMs << excess);
+        kLogger.warning() << "Companion auth lockout for" << peer << "after"
+                          << record.count << "failures";
+    }
+}
+
+void CompanionServer::clearAuthFailures(const QString& peer) {
+    m_authFailures.remove(peer);
+}
+
 HttpResponse CompanionServer::route(const HttpRequest& request) {
     const QStringList segments = request.path.split('/', Qt::SkipEmptyParts);
+
+    // Brute-force guard runs before anything else for non-loopback peers.
+    const qint64 nowMs = serverTimeMs();
+    if (!request.fromLoopback && isAuthThrottled(request.peerAddress, nowMs)) {
+        return HttpResponse::error(
+                429, "too_many_attempts", "auth throttled; retry later");
+    }
 
     // Pairing endpoints carry their own auth rules (loopback / code-gated).
     if (segments.size() >= 2 && segments.at(0) == QLatin1String("v1") &&
             segments.at(1) == QLatin1String("pair")) {
-        return handlePairing(segments, request);
+        // Failed claims also count toward the per-IP throttle.
+        HttpResponse response = handlePairing(segments, request);
+        if (!request.fromLoopback) {
+            if (response.status == 401) {
+                recordAuthFailure(request.peerAddress, nowMs);
+            } else if (response.status == 200) {
+                clearAuthFailures(request.peerAddress);
+            }
+        }
+        return response;
     }
 
     // Auth gate for everything else: loopback is trusted; LAN needs a valid
@@ -361,8 +478,14 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
     switch (m_pairing.authorize(
             request.fromLoopback, request.bearerToken(), needsControl)) {
     case PairingManager::AuthResult::Ok:
+        if (!request.fromLoopback) {
+            clearAuthFailures(request.peerAddress);
+        }
         break;
     case PairingManager::AuthResult::Unauthorized:
+        if (!request.fromLoopback) {
+            recordAuthFailure(request.peerAddress, nowMs);
+        }
         return HttpResponse::error(401, "unauthorized");
     case PairingManager::AuthResult::Forbidden:
         return HttpResponse::error(
@@ -411,6 +534,25 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
         }
         if (segments.size() == 4 && segments.at(3) == QLatin1String("cues")) {
             return handleTrackCues(trackId);
+        }
+        if (segments.size() == 4 && segments.at(3) == QLatin1String("cover")) {
+            QByteArray jpeg;
+            const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+                    "getTrackCover",
+                    Qt::BlockingQueuedConnection,
+                    Q_RETURN_ARG(QByteArray, jpeg),
+                    Q_ARG(int, trackId));
+            if (!ok) {
+                return HttpResponse::error(500, "internal", "cover load failed");
+            }
+            if (jpeg.isEmpty()) {
+                return HttpResponse::error(404, "not_found", "no cover art");
+            }
+            HttpResponse response;
+            response.status = 200;
+            response.contentType = "image/jpeg";
+            response.body = jpeg;
+            return response;
         }
         if (segments.size() == 5 &&
                 segments.at(3) == QLatin1String("waveform") &&
@@ -461,29 +603,38 @@ bool CompanionServer::isValidDeck(int deck) const {
 }
 
 QJsonObject CompanionServer::deckStateJson(int deck) const {
+    // Always emits the full DeckStateDto shape (all required fields present)
+    // so strictly-typed clients never fail on empty or freshly-loaded decks.
     QJsonObject dto;
     dto.insert(QStringLiteral("deck"), deck);
+
     const auto it = m_deckSnapshots.constFind(deck);
-    if (it == m_deckSnapshots.constEnd()) {
-        dto.insert(QStringLiteral("generation"), 0);
-        dto.insert(QStringLiteral("playing"), false);
-        return dto;
+    const bool haveSnapshot = it != m_deckSnapshots.constEnd();
+    dto.insert(QStringLiteral("generation"),
+            haveSnapshot ? static_cast<qint64>(it->generation) : 0);
+
+    QJsonObject tick;
+    double trackDuration = 0.0;
+    if (haveSnapshot) {
+        tick = it->lastTick;
+        if (it->loaded && it->loadedEvent.contains(QStringLiteral("track"))) {
+            const QJsonObject track =
+                    it->loadedEvent.value(QStringLiteral("track")).toObject();
+            dto.insert(QStringLiteral("track"), track);
+            // Until the first tick after a load arrives, fall back to the
+            // track's own duration instead of reporting 0.
+            trackDuration =
+                    track.value(QStringLiteral("durationSeconds")).toDouble(0.0);
+        }
     }
-    dto.insert(QStringLiteral("generation"), static_cast<qint64>(it->generation));
-    if (it->loaded && it->loadedEvent.contains(QStringLiteral("track"))) {
-        dto.insert(QStringLiteral("track"),
-                it->loadedEvent.value(QStringLiteral("track")));
-    }
-    // Merge the latest tick fields (present within one tick interval of load).
-    const QJsonObject& tick = it->lastTick;
     dto.insert(QStringLiteral("playposition"),
             tick.value(QStringLiteral("playposition")).toDouble(0.0));
     dto.insert(QStringLiteral("positionSeconds"),
             tick.value(QStringLiteral("positionSeconds")).toDouble(0.0));
     dto.insert(QStringLiteral("durationSeconds"),
-            tick.value(QStringLiteral("durationSeconds")).toDouble(0.0));
+            tick.value(QStringLiteral("durationSeconds")).toDouble(trackDuration));
     dto.insert(QStringLiteral("rate"),
-            tick.value(QStringLiteral("rate")).toDouble(0.0));
+            tick.value(QStringLiteral("rate")).toDouble(1.0));
     dto.insert(QStringLiteral("playing"),
             tick.value(QStringLiteral("playing")).toBool(false));
     dto.insert(QStringLiteral("vu"), tick.value(QStringLiteral("vu")).toDouble(0.0));
@@ -661,7 +812,10 @@ HttpResponse CompanionServer::handleDeckAction(
         return HttpResponse::json(200, "{\"ok\":true}");
     }
     if (action == "sync") {
+        // Push-button semantics: press + release, otherwise the control stays
+        // at 1.0 and subsequent syncs are edge-less no-ops.
         ControlObject::set(ConfigKey(group, QStringLiteral("beatsync")), 1.0);
+        ControlObject::set(ConfigKey(group, QStringLiteral("beatsync")), 0.0);
         return HttpResponse::json(200, "{\"ok\":true}");
     }
     if (action == "seek") {
