@@ -168,6 +168,15 @@ Suggested phone UX: a scroll wheel/list fling maps to `move` deltas; tapping a
 visible row sends `move` with the row delta then `loadSelected` (or use
 `/v1/decks/:deck/load {trackId}` directly since window rows carry ids).
 
+## 4c. Beat grid (real beat markers)
+
+`GET /v1/tracks/:id/beatgrid` → `{trackId, bpm, constantTempo, beats:[seconds...]}`
+(≤4096 beats; `truncated:true` if clipped). Use the `beats` array to draw exact
+beat/bar ticks on the waveform (bars = every 4th beat) instead of extrapolating
+from BPM — this handles variable-tempo tracks and off-grid first beats correctly.
+Fetch once per loaded track (positions are in seconds; convert with
+`durationSeconds` / `playposition`).
+
 ## 5. Search
 
 `q` uses Mixxx's native search grammar (same as the desktop search box):

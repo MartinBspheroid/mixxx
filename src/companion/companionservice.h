@@ -79,6 +79,8 @@ class CompanionService : public QObject {
     QByteArray getTrackJson(int trackId);
     /// Serialize a track's cue points to JSON (empty if track not found).
     QByteArray getTrackCues(int trackId);
+    /// Serialize a track's beat grid (beat positions in seconds) to JSON.
+    QByteArray getTrackBeatgrid(int trackId);
     /// Export a track's summary waveform as an MXWF v1 blob (empty if the
     /// completed summary is unavailable). All main thread.
     QByteArray exportWaveformSummary(int trackId);

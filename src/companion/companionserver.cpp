@@ -594,6 +594,22 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
         if (segments.size() == 4 && segments.at(3) == QLatin1String("cues")) {
             return handleTrackCues(trackId);
         }
+        if (segments.size() == 4 &&
+                segments.at(3) == QLatin1String("beatgrid")) {
+            QByteArray json;
+            const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+                    "getTrackBeatgrid",
+                    Qt::BlockingQueuedConnection,
+                    Q_RETURN_ARG(QByteArray, json),
+                    Q_ARG(int, trackId));
+            if (!ok) {
+                return HttpResponse::error(500, "internal");
+            }
+            if (json.isEmpty()) {
+                return HttpResponse::error(404, "not_found", "no such track");
+            }
+            return HttpResponse::json(200, json);
+        }
         if (segments.size() == 4 && segments.at(3) == QLatin1String("cover")) {
             QByteArray jpeg;
             const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,

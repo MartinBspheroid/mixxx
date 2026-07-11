@@ -60,6 +60,7 @@ preflights are answered, so browser dashboard clients work cross-origin.
 | `GET /v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult (fixed order: artist, title — may differ from the desktop's sort) |
 | `GET /v1/tracks/:id/waveform/summary` | binary MXWF blob (T09) |
 | `GET /v1/tracks/:id/cues` | cue/loop markers (T09) |
+| `GET /v1/tracks/:id/beatgrid` | `{trackId,bpm,constantTempo,beats:[seconds],truncated?}` (≤4096 beats) |
 | `GET /v1/tracks/:id/cover` | cover art JPEG, ≤512px (404 if none) |
 | `GET /v1/pair/code` | session pairing code (loopback only) |
 | `POST /v1/pair`, `POST /v1/pair/claim` | pairing window / claim token (see Authentication) |

@@ -34,6 +34,7 @@
 #include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
+#include "track/beats.h"
 #include "track/cue.h"
 #include "track/track.h"
 #include "track/trackid.h"
@@ -492,6 +493,56 @@ QByteArray CompanionService::getTrackJson(int trackId) {
     const CompanionSettings settings(m_pConfig);
     const QJsonObject dto = serializeTrack(pTrack, settings.exposeFilePaths());
     return QJsonDocument(dto).toJson(QJsonDocument::Compact);
+}
+
+QByteArray CompanionService::getTrackBeatgrid(int trackId) {
+    // Main thread (Track access). Beat positions in seconds, so the phone can
+    // draw real beat/bar ticks instead of extrapolating from BPM.
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    const QVariant idVariant(trackId);
+    const TrackId id(idVariant);
+    if (!id.isValid()) {
+        return QByteArray();
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager->getTrackById(id);
+    if (!pTrack) {
+        return QByteArray();
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("trackId"), trackId);
+    const double bpm = pTrack->getBpm();
+    if (bpm > 0.0) {
+        root.insert(QStringLiteral("bpm"), bpm);
+    }
+
+    QJsonArray beats;
+    const mixxx::BeatsPointer pBeats = pTrack->getBeats();
+    if (pBeats) {
+        root.insert(QStringLiteral("constantTempo"), pBeats->hasConstantTempo());
+        const double sampleRate = pBeats->getSampleRate().value();
+        if (sampleRate > 0.0) {
+            // Bound the payload; even a 10-minute 200 BPM track is ~2000 beats.
+            constexpr int kMaxBeats = 4096;
+            int count = 0;
+            for (auto it = pBeats->iteratorFrom(mixxx::audio::kStartFramePos);
+                    it != pBeats->cend() && count < kMaxBeats;
+                    ++it) {
+                const mixxx::audio::FramePos position = *it;
+                if (position.isValid()) {
+                    beats.append(position.value() / sampleRate);
+                    count++;
+                }
+            }
+            if (count >= kMaxBeats) {
+                root.insert(QStringLiteral("truncated"), true);
+            }
+        }
+    }
+    root.insert(QStringLiteral("beats"), beats);
+    return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
 QByteArray CompanionService::getTrackCues(int trackId) {

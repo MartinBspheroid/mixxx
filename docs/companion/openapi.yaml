@@ -248,6 +248,24 @@ paths:
       responses:
         "200": {description: OK}
         "404": {$ref: "#/components/responses/NotFound"}
+  /v1/tracks/{id}/beatgrid:
+    get:
+      summary: Beat grid — beat positions in seconds (draw real beat/bar ticks)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trackId: {type: integer}
+                  bpm: {type: number}
+                  constantTempo: {type: boolean}
+                  beats: {type: array, items: {type: number}, description: seconds}
+                  truncated: {type: boolean}
+        "404": {$ref: "#/components/responses/NotFound"}
   /v1/tracks/{id}/cover:
     get:
       summary: Cover art (JPEG, max 512px edge)
