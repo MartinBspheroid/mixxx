@@ -2862,6 +2862,7 @@ if(BUILD_TESTING)
         src/test/companionwaveformtest.cpp
         src/test/companionpairingtest.cpp
         src/test/companionhttptest.cpp
+        src/test/companiontrackserializertest.cpp
     )
   endif()
 
