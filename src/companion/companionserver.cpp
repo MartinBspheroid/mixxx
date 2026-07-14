@@ -340,7 +340,27 @@ void CompanionServer::onDeckLoaded(
     snapshot.loaded = true;
     snapshot.generation = generation;
     snapshot.loadedEvent = event;
+    snapshot.beatgridEvent = QJsonObject();
     snapshot.lastTick = QJsonObject();
+    broadcast(event, /*droppable*/ false);
+}
+
+void CompanionServer::onDeckBeatgrid(
+        int deck, quint64 generation, const QJsonObject& beatgrid) {
+    auto it = m_deckSnapshots.find(deck);
+    if (it == m_deckSnapshots.end() || !it->loaded ||
+            it->generation != generation) {
+        // Stale: the deck was emptied, or a newer track already took it over.
+        return;
+    }
+    QJsonObject event = beatgrid;
+    event.insert(QStringLiteral("type"), QStringLiteral("deck.beatgrid"));
+    event.insert(QStringLiteral("deck"), deck);
+    event.insert(QStringLiteral("generation"), static_cast<qint64>(generation));
+    event.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
+    it->beatgridEvent = event;
+    // Not droppable: unlike a tick, a grid is not refreshed on a timer, so a
+    // skipped one leaves the phone drawing beat markers that never arrive.
     broadcast(event, /*droppable*/ false);
 }
 
@@ -349,6 +369,7 @@ void CompanionServer::onDeckUnloaded(int deck, quint64 generation) {
     snapshot.loaded = false;
     snapshot.generation = generation;
     snapshot.loadedEvent = QJsonObject();
+    snapshot.beatgridEvent = QJsonObject();
     snapshot.lastTick = QJsonObject();
 
     QJsonObject event;
@@ -414,6 +435,10 @@ void CompanionServer::sendReplay(QWebSocket* pClient) {
         }
         pClient->sendTextMessage(QString::fromUtf8(
                 QJsonDocument(it->loadedEvent).toJson(QJsonDocument::Compact)));
+        if (!it->beatgridEvent.isEmpty()) {
+            pClient->sendTextMessage(QString::fromUtf8(QJsonDocument(
+                    it->beatgridEvent).toJson(QJsonDocument::Compact)));
+        }
         if (!it->lastTick.isEmpty()) {
             pClient->sendTextMessage(QString::fromUtf8(
                     QJsonDocument(it->lastTick).toJson(QJsonDocument::Compact)));

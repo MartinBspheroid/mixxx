@@ -112,6 +112,14 @@ The server pushes events; the client may send a few messages.
   "waveform":{ "summaryUrl":"/v1/tracks/1234/waveform/summary" },
   "serverTimeMs":182934701 }
 ```
+`deck.beatgrid` (after `deck.loaded`, on every grid change, and replayed on
+connect). `beats` is in seconds from the track start, stops at the track end, and
+is empty until the track is analyzed — so draw ticks from this and expect a
+second event once analysis lands, instead of polling the HTTP endpoint:
+```json
+{ "type":"deck.beatgrid", "deck":1, "generation":42, "bpm":129.98,
+  "constantTempo":true, "beats":[0.021, 0.483, 0.945], "serverTimeMs":182934701 }
+```
 `deck.tick` (10–20 Hz while state changes, ≥1 Hz keepalive):
 ```json
 { "type":"deck.tick", "deck":1, "generation":42, "playposition":0.437,
@@ -169,6 +177,10 @@ visible row sends `move` with the row delta then `loadSelected` (or use
 `/v1/decks/:deck/load {trackId}` directly since window rows carry ids).
 
 ## 4c. Beat grid (real beat markers)
+
+For a track on a deck, prefer the pushed `deck.beatgrid` event (above): it
+arrives unprompted and re-fires when the grid changes. This endpoint is for
+grids you want off-deck (a library preview, say).
 
 `GET /v1/tracks/:id/beatgrid` → `{trackId, bpm, constantTempo, beats:[seconds...]}`
 (≤4096 beats; `truncated:true` if clipped). Use the `beats` array to draw exact

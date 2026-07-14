@@ -63,6 +63,11 @@ class CompanionServer : public QObject {
     /// A deck loaded a track. `track` is the already-serialized TrackDto, built
     /// on the main thread; `generation` is the deck's load counter.
     void onDeckLoaded(int deck, quint64 generation, const QJsonObject& track);
+    /// A deck's beat grid became available or changed (analysis finished, tap
+    /// BPM, manual adjust). `beatgrid` is the serialized BeatgridDto; events
+    /// whose `generation` is not the deck's current one are stale and dropped.
+    void onDeckBeatgrid(
+            int deck, quint64 generation, const QJsonObject& beatgrid);
     /// A deck was emptied.
     void onDeckUnloaded(int deck, quint64 generation);
     /// The number of decks changed (rewires the publisher).
@@ -167,8 +172,9 @@ class CompanionServer : public QObject {
     struct DeckSnapshot {
         bool loaded = false;
         quint64 generation = 0;
-        QJsonObject loadedEvent; ///< last deck.loaded event, for replay
-        QJsonObject lastTick;    ///< last deck.tick event, for replay
+        QJsonObject loadedEvent;   ///< last deck.loaded event, for replay
+        QJsonObject beatgridEvent; ///< last deck.beatgrid event, for replay
+        QJsonObject lastTick;      ///< last deck.tick event, for replay
     };
     QHash<int, DeckSnapshot> m_deckSnapshots;
 };

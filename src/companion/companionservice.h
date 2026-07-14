@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 
 #include "preferences/usersettings.h"
@@ -99,6 +100,8 @@ class CompanionService : public QObject {
 
   signals:
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
+    void deckBeatgridEvent(
+            int deck, quint64 generation, const QJsonObject& beatgrid);
     void deckUnloadedEvent(int deck, quint64 generation);
     void numberOfDecksChangedEvent(int numDecks);
     void libraryViewEvent(const QJsonObject& event);
@@ -109,6 +112,11 @@ class CompanionService : public QObject {
     void connectDecks(int fromIndex, int toIndex);
     void onDeckLoaded(int deckIndex, const TrackPointer& pTrack);
     void onDeckUnloaded(int deckIndex);
+    /// Follow pTrack's beat grid for `deck`, replacing any previous watch.
+    void watchBeats(int deck, const TrackPointer& pTrack);
+    /// Mark `deck`'s grid dirty; the burst timer does the actual emit.
+    void queueBeatgrid(int deck);
+    void emitBeatgrid(int deck);
     void onNumberOfDecksChanged(int numDecks);
     void onLoadToDeckRequested(int deck, int trackId, bool play);
     void onAutoDjQueueRequested(int trackId);
@@ -128,6 +136,10 @@ class CompanionService : public QObject {
     QList<QMetaObject::Connection> m_libraryModelConnections;
     QJsonObject m_pendingLibraryChanged; ///< coalesced library.changed payload
     QTimer* m_pLibraryChangedTimer = nullptr;
+    QHash<int, TrackPointer> m_deckTracks; ///< deck (1-based) -> loaded track
+    QHash<int, QMetaObject::Connection> m_beatsConnections;
+    QSet<int> m_pendingBeatgridDecks; ///< decks whose grid changed since the tick
+    QTimer* m_pBeatgridTimer = nullptr;
     const QString m_appVersion;
 
     QThread* m_pThread;

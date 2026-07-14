@@ -130,6 +130,10 @@ void CompanionService::start() {
             m_pServer,
             &CompanionServer::onDeckLoaded);
     connect(this,
+            &CompanionService::deckBeatgridEvent,
+            m_pServer,
+            &CompanionServer::onDeckBeatgrid);
+    connect(this,
             &CompanionService::deckUnloadedEvent,
             m_pServer,
             &CompanionServer::onDeckUnloaded);
@@ -163,6 +167,21 @@ void CompanionService::start() {
             &CompanionService::libraryChangedEvent,
             m_pServer,
             &CompanionServer::onLibraryChanged);
+
+    // Dragging a beat grid emits beatsUpdated per mouse move, and each grid is
+    // a multi-KB payload, so coalesce the burst into at most one send per deck.
+    if (!m_pBeatgridTimer) {
+        m_pBeatgridTimer = new QTimer(this);
+        m_pBeatgridTimer->setSingleShot(true);
+        m_pBeatgridTimer->setInterval(200);
+        connect(m_pBeatgridTimer, &QTimer::timeout, this, [this]() {
+            const QSet<int> decks = m_pendingBeatgridDecks;
+            m_pendingBeatgridDecks.clear();
+            for (int deck : decks) {
+                emitBeatgrid(deck);
+            }
+        });
+    }
 
     // Coarse library invalidation: coalesce TrackDAO change bursts.
     if (m_pTrackCollectionManager) {
@@ -310,12 +329,51 @@ void CompanionService::onDeckLoaded(int deckIndex, const TrackPointer& pTrack) {
     const CompanionSettings settings(m_pConfig);
     const QJsonObject track = serializeTrack(pTrack, settings.exposeFilePaths());
     emit deckLoadedEvent(deck, generation, track);
+    // Emitted after the load event (same queued connection, so ordering holds):
+    // the server drops a grid for a deck it does not yet consider loaded.
+    watchBeats(deck, pTrack);
+    emitBeatgrid(deck);
 }
 
 void CompanionService::onDeckUnloaded(int deckIndex) {
     const int deck = deckIndex + 1;
     const quint64 generation = ++m_generations[deck];
+    watchBeats(deck, TrackPointer());
     emit deckUnloadedEvent(deck, generation);
+}
+
+void CompanionService::watchBeats(int deck, const TrackPointer& pTrack) {
+    // take() on a missing key yields a default-constructed (invalid) Connection,
+    // which disconnect() simply ignores.
+    disconnect(m_beatsConnections.take(deck));
+    m_pendingBeatgridDecks.remove(deck);
+    if (!pTrack) {
+        m_deckTracks.remove(deck);
+        return;
+    }
+    m_deckTracks.insert(deck, pTrack);
+    // The grid changes after the load too: the analyzer finishes, or the user
+    // taps BPM / drags the grid. The phone needs those, not just the first one.
+    m_beatsConnections.insert(deck,
+            connect(pTrack.get(), &Track::beatsUpdated, this, [this, deck]() {
+                queueBeatgrid(deck);
+            }));
+}
+
+void CompanionService::queueBeatgrid(int deck) {
+    m_pendingBeatgridDecks.insert(deck);
+    if (m_pBeatgridTimer && !m_pBeatgridTimer->isActive()) {
+        m_pBeatgridTimer->start();
+    }
+}
+
+void CompanionService::emitBeatgrid(int deck) {
+    const TrackPointer pTrack = m_deckTracks.value(deck);
+    if (!pTrack) {
+        return;
+    }
+    emit deckBeatgridEvent(
+            deck, m_generations.value(deck), serializeBeatgrid(pTrack));
 }
 
 void CompanionService::onNumberOfDecksChanged(int numDecks) {
@@ -511,37 +569,8 @@ QByteArray CompanionService::getTrackBeatgrid(int trackId) {
         return QByteArray();
     }
 
-    QJsonObject root;
+    QJsonObject root = serializeBeatgrid(pTrack);
     root.insert(QStringLiteral("trackId"), trackId);
-    const double bpm = pTrack->getBpm();
-    if (bpm > 0.0) {
-        root.insert(QStringLiteral("bpm"), bpm);
-    }
-
-    QJsonArray beats;
-    const mixxx::BeatsPointer pBeats = pTrack->getBeats();
-    if (pBeats) {
-        root.insert(QStringLiteral("constantTempo"), pBeats->hasConstantTempo());
-        const double sampleRate = pBeats->getSampleRate().value();
-        if (sampleRate > 0.0) {
-            // Bound the payload; even a 10-minute 200 BPM track is ~2000 beats.
-            constexpr int kMaxBeats = 4096;
-            int count = 0;
-            for (auto it = pBeats->iteratorFrom(mixxx::audio::kStartFramePos);
-                    it != pBeats->cend() && count < kMaxBeats;
-                    ++it) {
-                const mixxx::audio::FramePos position = *it;
-                if (position.isValid()) {
-                    beats.append(position.value() / sampleRate);
-                    count++;
-                }
-            }
-            if (count >= kMaxBeats) {
-                root.insert(QStringLiteral("truncated"), true);
-            }
-        }
-    }
-    root.insert(QStringLiteral("beats"), beats);
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 

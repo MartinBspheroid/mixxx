@@ -93,7 +93,9 @@ Consume the above:
 
 - **"What to play next"** screen (Phase A) — the flagship.
 - **Prep / queue** and **session history** screens (Phase C).
-- Real beat/bar ticks from `/v1/tracks/:id/beatgrid` (drop the BPM-math fake).
+- Real beat/bar ticks from the pushed `deck.beatgrid` event (drop the BPM-math
+  fake). No polling: it lands after `deck.loaded`, on connect, and on every grid
+  change, so ticks stay right when analysis finishes or the DJ nudges the grid.
 - Stem strip on the deck HUD (Phase B).
 - Later: home-screen widget, Wear OS glance, request-mode guest UI.
 

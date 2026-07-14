@@ -60,7 +60,7 @@ preflights are answered, so browser dashboard clients work cross-origin.
 | `GET /v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult (fixed order: artist, title — may differ from the desktop's sort) |
 | `GET /v1/tracks/:id/waveform/summary` | binary MXWF blob (T09) |
 | `GET /v1/tracks/:id/cues` | cue/loop markers (T09) |
-| `GET /v1/tracks/:id/beatgrid` | `{trackId,bpm,constantTempo,beats:[seconds],truncated?}` (≤4096 beats) |
+| `GET /v1/tracks/:id/beatgrid` | `{trackId,bpm,constantTempo,beats:[seconds],truncated?}` (≤4096 beats, stops at track end). Decks also get this pushed as `deck.beatgrid` — prefer that. |
 | `GET /v1/tracks/:id/cover` | cover art JPEG, ≤512px (404 if none) |
 | `GET /v1/pair/code` | session pairing code (loopback only) |
 | `POST /v1/pair`, `POST /v1/pair/claim` | pairing window / claim token (see Authentication) |
@@ -162,6 +162,32 @@ current state so late joiners are instantly correct):
     "color": "#3F51B5"
   },
   "waveform": { "summaryUrl": "/v1/tracks/1234/waveform/summary" },
+  "serverTimeMs": 182934701
+}
+```
+
+`deck.beatgrid` — the deck's beat grid, pushed right after `deck.loaded`, again
+whenever the grid changes (analysis finishes, tap BPM, manual adjust), and on
+client connect (replayed after that deck's `deck.loaded`). Same payload as
+`GET /v1/tracks/:id/beatgrid` minus `trackId`, plus the deck framing — so a
+client that renders beat ticks never has to poll the HTTP endpoint.
+
+`beats` holds **seconds from the start of the track**, is always present (empty
+when the track has no grid yet), stops at the end of the track, and is capped at
+4096 entries — `truncated: true` says beats were dropped. Bursts of grid edits
+are coalesced (~200 ms), so expect the last state, not every intermediate one.
+
+Drop any event whose `generation` is not the deck's current one: it describes a
+track that has already been replaced.
+
+```json
+{
+  "type": "deck.beatgrid",
+  "deck": 1,
+  "generation": 42,
+  "bpm": 129.98,
+  "constantTempo": true,
+  "beats": [0.021, 0.483, 0.945, 1.407],
   "serverTimeMs": 182934701
 }
 ```

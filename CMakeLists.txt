@@ -2860,6 +2860,7 @@ if(BUILD_TESTING)
       mixxx-test
       PRIVATE
         src/test/companionwaveformtest.cpp
+        src/test/companionharmonictest.cpp
         src/test/companionpairingtest.cpp
         src/test/companionhttptest.cpp
         src/test/companiontrackserializertest.cpp
@@ -4991,6 +4992,8 @@ if(COMPANION_API)
       src/companion/httpconnection.h
       src/companion/deckstatepublisher.cpp
       src/companion/deckstatepublisher.h
+      src/companion/harmonic.cpp
+      src/companion/harmonic.h
       src/companion/pairingmanager.cpp
       src/companion/pairingmanager.h
       src/companion/trackserializer.cpp
