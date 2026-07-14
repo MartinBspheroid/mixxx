@@ -2861,10 +2861,16 @@ if(BUILD_TESTING)
       PRIVATE
         src/test/companionwaveformtest.cpp
         src/test/companionharmonictest.cpp
+        src/test/companionpairingcodetest.cpp
         src/test/companionpairingtest.cpp
         src/test/companionhttptest.cpp
         src/test/companiontrackserializertest.cpp
     )
+    # companionpairingcodetest.cpp instantiates the Companion preferences page.
+    # AUTOUIC generates ui_dlgprefcompaniondlg.h into mixxx-lib's autogen dir,
+    # which is not on mixxx-test's include path by default.
+    target_include_directories(
+      mixxx-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/mixxx-lib_autogen/include")
   endif()
 
   set_target_properties(mixxx-test PROPERTIES AUTOMOC ON)

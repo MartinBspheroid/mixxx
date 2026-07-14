@@ -35,6 +35,12 @@ code Mixxx generates at startup, prints prominently in its log, and serves via
 It is valid for the whole Mixxx session with full control scope — the connect
 flow is always simply: *read the code off Mixxx, type it on the phone*.
 
+The code belongs to the Mixxx session, not to the server: it exists from startup
+whether or not the API is enabled, so **Preferences → Companion API always shows
+it**, and it survives enabling the API or changing the port (both restart the
+server) so a phone you already paired keeps working. Only quitting Mixxx or
+clicking **Regenerate** changes it.
+
 Pass it on every request:
 
 ```

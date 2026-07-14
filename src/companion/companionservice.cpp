@@ -15,6 +15,7 @@
 
 #include "companion/companionserver.h"
 #include "companion/companionsettings.h"
+#include "companion/pairingmanager.h"
 #include "companion/trackserializer.h"
 #include "companion/waveformmxwf.h"
 #include <QAbstractItemModel>
@@ -82,6 +83,11 @@ CompanionService::CompanionService(UserSettingsPointer pConfig,
           m_pPlayerManager(pPlayerManager),
           m_pTrackCollectionManager(pTrackCollectionManager),
           m_pLibrary(pLibrary),
+          // The code identifies this Mixxx session, not the server's run state:
+          // it has to be readable in Preferences before the API is ever enabled,
+          // and must survive a restart so a code already typed into a phone
+          // keeps working. Generating it costs nothing when the API stays off.
+          m_sessionCode(PairingManager::makeCode()),
           m_appVersion(std::move(appVersion)),
           m_pThread(nullptr),
           m_pServer(nullptr),
@@ -107,10 +113,6 @@ void CompanionService::start() {
     }
 
     const int numDecks = m_pPlayerManager->numberOfDecks();
-
-    // Generate the session pairing code here (main thread) so it is readable by
-    // the Preferences page without touching the worker thread.
-    m_sessionCode = PairingManager::makeCode();
 
     m_pThread = new QThread();
     m_pThread->setObjectName(QStringLiteral("CompanionAPI"));
@@ -255,14 +257,15 @@ void CompanionService::restart() {
 }
 
 void CompanionService::regenerateSessionCode() {
-    if (!m_running || !m_pServer) {
-        return;
-    }
     m_sessionCode = PairingManager::makeCode();
-    QMetaObject::invokeMethod(m_pServer,
-            "setSessionCode",
-            Qt::QueuedConnection,
-            Q_ARG(QString, m_sessionCode));
+    if (m_running && m_pServer) {
+        // Only a running server has a code to replace; when stopped, start()
+        // will hand it the current one.
+        QMetaObject::invokeMethod(m_pServer,
+                "setSessionCode",
+                Qt::QueuedConnection,
+                Q_ARG(QString, m_sessionCode));
+    }
     emit stateChanged();
 }
 
@@ -301,7 +304,9 @@ void CompanionService::stop() {
         delete m_pThread;
         m_pThread = nullptr;
     }
-    m_sessionCode.clear();
+    // m_sessionCode deliberately survives: restart() is stop()+start(), and
+    // rotating the code there would silently invalidate an already-paired phone
+    // just because the port or the LAN toggle changed.
     kLogger.info() << "Companion API stopped";
     emit stateChanged();
 }

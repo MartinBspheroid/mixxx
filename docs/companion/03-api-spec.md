@@ -26,7 +26,10 @@ lands here in the same PR as the code.
   prominently in the log, and serves it to local helpers via
   `GET /v1/pair/code` (loopback-only). It is valid for the whole session with
   full control scope. Pass it as `?code=123456` (HTTP or WS upgrade) or
-  `Authorization: Bearer 123456`.
+  `Authorization: Bearer 123456`. The code is tied to the Mixxx session rather
+  than the server, so it is always displayed in Preferences → Companion API
+  (even before the API is enabled) and is stable across a restart of the server;
+  only quitting Mixxx or **Regenerate** rotates it.
 - Long-lived per-device tokens (via `POST /v1/pair` + `/v1/pair/claim`) remain
   available underneath for clients that want to skip code entry, but the
   standard connect flow is always: read the code off Mixxx, type it on the

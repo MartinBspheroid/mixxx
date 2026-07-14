@@ -36,14 +36,15 @@ void DlgPrefCompanion::slotUpdate() {
 
 void DlgPrefCompanion::refreshLiveState() {
     const bool running = m_pService && m_pService->isRunning();
-    const QString code = running ? m_pService->sessionCode() : QString();
+    const QString code = m_pService ? m_pService->sessionCode() : QString();
 
-    // The code is only meaningful for LAN clients on a running service.
+    // Always show the code: it belongs to the session, not to the running
+    // server, so it stays readable while the user is still setting the API up.
+    // The status label below is what says whether anything is listening yet.
     labelCode->setText(code.isEmpty() ? QStringLiteral("——————") : code);
-    const bool codeUsable = running && !code.isEmpty();
-    labelCode->setEnabled(codeUsable);
-    labelCodeCaption->setEnabled(codeUsable);
-    pushButtonRegenerate->setEnabled(codeUsable);
+    labelCode->setEnabled(!code.isEmpty());
+    labelCodeCaption->setEnabled(!code.isEmpty());
+    pushButtonRegenerate->setEnabled(!code.isEmpty());
 
     if (!m_pService) {
         labelStatus->setText(tr("Status: unavailable"));
