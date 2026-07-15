@@ -31,5 +31,17 @@ QJsonObject serializeBeatgrid(const TrackPointer& pTrack);
 /// has ~2000 beats.
 constexpr int kMaxBeatgridBeats = 4096;
 
+/// Serializes a track's cue points into the `CuesDto` JSON of the Companion
+/// API: `{cues:[{type, positionSeconds?, lengthSeconds?, index?, label?, color}]}`.
+/// `cues` is always present. Cue types the API does not expose
+/// (Invalid/Beat/Jump/N60dBSound) are skipped, as are cues on a track with no
+/// known sample rate, whose positions cannot be expressed in seconds.
+///
+/// The caller adds the framing (`trackId` for the HTTP DTO, `deck`/`generation`
+/// for the `deck.cues` event).
+///
+/// MUST be called on the main thread, for the same reason as serializeTrack().
+QJsonObject serializeCues(const TrackPointer& pTrack);
+
 } // namespace companion
 } // namespace mixxx

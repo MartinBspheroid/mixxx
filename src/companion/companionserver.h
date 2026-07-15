@@ -68,6 +68,10 @@ class CompanionServer : public QObject {
     /// whose `generation` is not the deck's current one are stale and dropped.
     void onDeckBeatgrid(
             int deck, quint64 generation, const QJsonObject& beatgrid);
+    /// A deck's cue points became available or changed (hotcue set/cleared,
+    /// intro/outro moved, label or color edited). `cues` is the serialized
+    /// CuesDto; stale generations are dropped, as for onDeckBeatgrid().
+    void onDeckCues(int deck, quint64 generation, const QJsonObject& cues);
     /// A deck was emptied.
     void onDeckUnloaded(int deck, quint64 generation);
     /// The number of decks changed (rewires the publisher).
@@ -174,9 +178,19 @@ class CompanionServer : public QObject {
         quint64 generation = 0;
         QJsonObject loadedEvent;   ///< last deck.loaded event, for replay
         QJsonObject beatgridEvent; ///< last deck.beatgrid event, for replay
+        QJsonObject cuesEvent;     ///< last deck.cues event, for replay
         QJsonObject lastTick;      ///< last deck.tick event, for replay
     };
     QHash<int, DeckSnapshot> m_deckSnapshots;
+
+    /// Frame a per-deck detail payload (grid, cues) as `type`, remember it in
+    /// `snapshotField` for replay, and broadcast it -- unless `generation` is no
+    /// longer the deck's, in which case it describes a replaced track.
+    void broadcastDeckDetail(int deck,
+            quint64 generation,
+            const QJsonObject& payload,
+            const QString& type,
+            QJsonObject DeckSnapshot::*snapshotField);
 };
 
 } // namespace companion

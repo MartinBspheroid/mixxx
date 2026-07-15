@@ -102,6 +102,7 @@ class CompanionService : public QObject {
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
     void deckBeatgridEvent(
             int deck, quint64 generation, const QJsonObject& beatgrid);
+    void deckCuesEvent(int deck, quint64 generation, const QJsonObject& cues);
     void deckUnloadedEvent(int deck, quint64 generation);
     void numberOfDecksChangedEvent(int numDecks);
     void libraryViewEvent(const QJsonObject& event);
@@ -112,11 +113,15 @@ class CompanionService : public QObject {
     void connectDecks(int fromIndex, int toIndex);
     void onDeckLoaded(int deckIndex, const TrackPointer& pTrack);
     void onDeckUnloaded(int deckIndex);
-    /// Follow pTrack's beat grid for `deck`, replacing any previous watch.
-    void watchBeats(int deck, const TrackPointer& pTrack);
-    /// Mark `deck`'s grid dirty; the burst timer does the actual emit.
+    /// Follow pTrack's beat grid and cues for `deck`, replacing any previous
+    /// watch.
+    void watchTrack(int deck, const TrackPointer& pTrack);
+    /// Mark `deck`'s grid/cues dirty; the burst timer does the actual emit.
     void queueBeatgrid(int deck);
+    void queueCues(int deck);
+    void startDeckDetailTimer();
     void emitBeatgrid(int deck);
+    void emitCues(int deck);
     void onNumberOfDecksChanged(int numDecks);
     void onLoadToDeckRequested(int deck, int trackId, bool play);
     void onAutoDjQueueRequested(int trackId);
@@ -137,9 +142,10 @@ class CompanionService : public QObject {
     QJsonObject m_pendingLibraryChanged; ///< coalesced library.changed payload
     QTimer* m_pLibraryChangedTimer = nullptr;
     QHash<int, TrackPointer> m_deckTracks; ///< deck (1-based) -> loaded track
-    QHash<int, QMetaObject::Connection> m_beatsConnections;
+    QHash<int, QList<QMetaObject::Connection>> m_trackConnections;
     QSet<int> m_pendingBeatgridDecks; ///< decks whose grid changed since the tick
-    QTimer* m_pBeatgridTimer = nullptr;
+    QSet<int> m_pendingCueDecks;      ///< decks whose cues changed since the tick
+    QTimer* m_pDeckDetailTimer = nullptr;
     const QString m_appVersion;
 
     QThread* m_pThread;

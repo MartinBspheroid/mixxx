@@ -46,26 +46,6 @@
 #include "waveform/waveformfactory.h"
 
 namespace {
-QString cueTypeString(mixxx::CueType type) {
-    switch (type) {
-    case mixxx::CueType::HotCue:
-        return QStringLiteral("hotcue");
-    case mixxx::CueType::MainCue:
-        return QStringLiteral("maincue");
-    case mixxx::CueType::Loop:
-        return QStringLiteral("loop");
-    case mixxx::CueType::Intro:
-        return QStringLiteral("intro");
-    case mixxx::CueType::Outro:
-        return QStringLiteral("outro");
-    default:
-        // Invalid/Beat/Jump/N60dBSound are not exposed to companion clients.
-        return QString();
-    }
-}
-} // namespace
-
-namespace {
 const mixxx::Logger kLogger("Companion");
 } // namespace
 
@@ -136,6 +116,10 @@ void CompanionService::start() {
             m_pServer,
             &CompanionServer::onDeckBeatgrid);
     connect(this,
+            &CompanionService::deckCuesEvent,
+            m_pServer,
+            &CompanionServer::onDeckCues);
+    connect(this,
             &CompanionService::deckUnloadedEvent,
             m_pServer,
             &CompanionServer::onDeckUnloaded);
@@ -170,17 +154,23 @@ void CompanionService::start() {
             m_pServer,
             &CompanionServer::onLibraryChanged);
 
-    // Dragging a beat grid emits beatsUpdated per mouse move, and each grid is
-    // a multi-KB payload, so coalesce the burst into at most one send per deck.
-    if (!m_pBeatgridTimer) {
-        m_pBeatgridTimer = new QTimer(this);
-        m_pBeatgridTimer->setSingleShot(true);
-        m_pBeatgridTimer->setInterval(200);
-        connect(m_pBeatgridTimer, &QTimer::timeout, this, [this]() {
-            const QSet<int> decks = m_pendingBeatgridDecks;
+    // Grid and cue edits both arrive in bursts (dragging a grid emits
+    // beatsUpdated per mouse move; clearing hotcues emits cuesUpdated per cue),
+    // so coalesce each into at most one send per deck.
+    if (!m_pDeckDetailTimer) {
+        m_pDeckDetailTimer = new QTimer(this);
+        m_pDeckDetailTimer->setSingleShot(true);
+        m_pDeckDetailTimer->setInterval(200);
+        connect(m_pDeckDetailTimer, &QTimer::timeout, this, [this]() {
+            const QSet<int> gridDecks = m_pendingBeatgridDecks;
             m_pendingBeatgridDecks.clear();
-            for (int deck : decks) {
+            for (int deck : gridDecks) {
                 emitBeatgrid(deck);
+            }
+            const QSet<int> cueDecks = m_pendingCueDecks;
+            m_pendingCueDecks.clear();
+            for (int deck : cueDecks) {
+                emitCues(deck);
             }
         });
     }
@@ -335,40 +325,60 @@ void CompanionService::onDeckLoaded(int deckIndex, const TrackPointer& pTrack) {
     const QJsonObject track = serializeTrack(pTrack, settings.exposeFilePaths());
     emit deckLoadedEvent(deck, generation, track);
     // Emitted after the load event (same queued connection, so ordering holds):
-    // the server drops a grid for a deck it does not yet consider loaded.
-    watchBeats(deck, pTrack);
+    // the server drops a grid/cue event for a deck it does not yet consider
+    // loaded.
+    watchTrack(deck, pTrack);
     emitBeatgrid(deck);
+    emitCues(deck);
 }
 
 void CompanionService::onDeckUnloaded(int deckIndex) {
     const int deck = deckIndex + 1;
     const quint64 generation = ++m_generations[deck];
-    watchBeats(deck, TrackPointer());
+    watchTrack(deck, TrackPointer());
     emit deckUnloadedEvent(deck, generation);
 }
 
-void CompanionService::watchBeats(int deck, const TrackPointer& pTrack) {
-    // take() on a missing key yields a default-constructed (invalid) Connection,
-    // which disconnect() simply ignores.
-    disconnect(m_beatsConnections.take(deck));
+void CompanionService::watchTrack(int deck, const TrackPointer& pTrack) {
+    const QList<QMetaObject::Connection> previous = m_trackConnections.take(deck);
+    for (const QMetaObject::Connection& connection : previous) {
+        disconnect(connection);
+    }
     m_pendingBeatgridDecks.remove(deck);
+    m_pendingCueDecks.remove(deck);
     if (!pTrack) {
         m_deckTracks.remove(deck);
         return;
     }
     m_deckTracks.insert(deck, pTrack);
-    // The grid changes after the load too: the analyzer finishes, or the user
-    // taps BPM / drags the grid. The phone needs those, not just the first one.
-    m_beatsConnections.insert(deck,
+    // Both change after the load: the analyzer finishes, the user taps BPM or
+    // drags the grid, sets or clears a hotcue. The phone needs those, not just
+    // whatever happened to be true at load time.
+    QList<QMetaObject::Connection> connections;
+    connections.append(
             connect(pTrack.get(), &Track::beatsUpdated, this, [this, deck]() {
                 queueBeatgrid(deck);
             }));
+    connections.append(
+            connect(pTrack.get(), &Track::cuesUpdated, this, [this, deck]() {
+                queueCues(deck);
+            }));
+    m_trackConnections.insert(deck, connections);
 }
 
 void CompanionService::queueBeatgrid(int deck) {
     m_pendingBeatgridDecks.insert(deck);
-    if (m_pBeatgridTimer && !m_pBeatgridTimer->isActive()) {
-        m_pBeatgridTimer->start();
+    startDeckDetailTimer();
+}
+
+void CompanionService::queueCues(int deck) {
+    m_pendingCueDecks.insert(deck);
+    startDeckDetailTimer();
+}
+
+void CompanionService::startDeckDetailTimer() {
+    if (m_pDeckDetailTimer && !m_pDeckDetailTimer->isActive()) {
+        m_pDeckDetailTimer->start();
     }
 }
 
@@ -379,6 +389,14 @@ void CompanionService::emitBeatgrid(int deck) {
     }
     emit deckBeatgridEvent(
             deck, m_generations.value(deck), serializeBeatgrid(pTrack));
+}
+
+void CompanionService::emitCues(int deck) {
+    const TrackPointer pTrack = m_deckTracks.value(deck);
+    if (!pTrack) {
+        return;
+    }
+    emit deckCuesEvent(deck, m_generations.value(deck), serializeCues(pTrack));
 }
 
 void CompanionService::onNumberOfDecksChanged(int numDecks) {
@@ -592,46 +610,8 @@ QByteArray CompanionService::getTrackCues(int trackId) {
     if (!pTrack) {
         return QByteArray();
     }
-    const double sampleRate = pTrack->getSampleRate().value();
-
-    QJsonArray cues;
-    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
-    for (const CuePointer& pCue : cuePoints) {
-        if (!pCue) {
-            continue;
-        }
-        const QString type = cueTypeString(pCue->getType());
-        if (type.isEmpty()) {
-            continue;
-        }
-        QJsonObject cue;
-        cue.insert(QStringLiteral("type"), type);
-        const mixxx::audio::FramePos position = pCue->getPosition();
-        if (position.isValid() && sampleRate > 0.0) {
-            cue.insert(QStringLiteral("positionSeconds"),
-                    position.value() / sampleRate);
-            const mixxx::audio::FramePos endPosition = pCue->getEndPosition();
-            if (endPosition.isValid()) {
-                cue.insert(QStringLiteral("lengthSeconds"),
-                        (endPosition.value() - position.value()) / sampleRate);
-            }
-        }
-        const int hotcue = pCue->getHotCue();
-        if (hotcue >= 0) {
-            cue.insert(QStringLiteral("index"), hotcue);
-        }
-        const QString label = pCue->getLabel();
-        if (!label.isEmpty()) {
-            cue.insert(QStringLiteral("label"), label);
-        }
-        cue.insert(QStringLiteral("color"),
-                mixxx::RgbColor::toQString(pCue->getColor()));
-        cues.append(cue);
-    }
-
-    QJsonObject root;
+    QJsonObject root = serializeCues(pTrack);
     root.insert(QStringLiteral("trackId"), trackId);
-    root.insert(QStringLiteral("cues"), cues);
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 

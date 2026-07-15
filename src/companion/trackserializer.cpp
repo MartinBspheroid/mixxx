@@ -3,6 +3,7 @@
 #include <QJsonArray>
 
 #include "track/beats.h"
+#include "track/cue.h"
 #include "track/track.h"
 #include "util/color/rgbcolor.h"
 
@@ -14,6 +15,24 @@ void insertIfNonEmpty(
         QJsonObject* pObject, const QString& key, const QString& value) {
     if (!value.isEmpty()) {
         pObject->insert(key, value);
+    }
+}
+
+QString cueTypeString(mixxx::CueType type) {
+    switch (type) {
+    case mixxx::CueType::HotCue:
+        return QStringLiteral("hotcue");
+    case mixxx::CueType::MainCue:
+        return QStringLiteral("maincue");
+    case mixxx::CueType::Loop:
+        return QStringLiteral("loop");
+    case mixxx::CueType::Intro:
+        return QStringLiteral("intro");
+    case mixxx::CueType::Outro:
+        return QStringLiteral("outro");
+    default:
+        // Invalid/Beat/Jump/N60dBSound are not exposed to companion clients.
+        return QString();
     }
 }
 } // namespace
@@ -104,6 +123,49 @@ QJsonObject serializeBeatgrid(const TrackPointer& pTrack) {
         }
     }
     dto.insert(QStringLiteral("beats"), beats);
+    return dto;
+}
+
+QJsonObject serializeCues(const TrackPointer& pTrack) {
+    QJsonObject dto;
+    QJsonArray cues;
+    if (!pTrack) {
+        dto.insert(QStringLiteral("cues"), cues);
+        return dto;
+    }
+
+    const double sampleRate = pTrack->getSampleRate().value();
+    const QList<CuePointer> cuePoints = pTrack->getCuePoints();
+    for (const CuePointer& pCue : cuePoints) {
+        if (!pCue) {
+            continue;
+        }
+        const QString type = cueTypeString(pCue->getType());
+        if (type.isEmpty()) {
+            continue;
+        }
+        QJsonObject cue;
+        cue.insert(QStringLiteral("type"), type);
+        const mixxx::audio::FramePos position = pCue->getPosition();
+        if (position.isValid() && sampleRate > 0.0) {
+            cue.insert(QStringLiteral("positionSeconds"),
+                    position.value() / sampleRate);
+            const mixxx::audio::FramePos endPosition = pCue->getEndPosition();
+            if (endPosition.isValid()) {
+                cue.insert(QStringLiteral("lengthSeconds"),
+                        (endPosition.value() - position.value()) / sampleRate);
+            }
+        }
+        const int hotcue = pCue->getHotCue();
+        if (hotcue >= 0) {
+            cue.insert(QStringLiteral("index"), hotcue);
+        }
+        insertIfNonEmpty(&cue, QStringLiteral("label"), pCue->getLabel());
+        cue.insert(QStringLiteral("color"),
+                mixxx::RgbColor::toQString(pCue->getColor()));
+        cues.append(cue);
+    }
+    dto.insert(QStringLiteral("cues"), cues);
     return dto;
 }
 

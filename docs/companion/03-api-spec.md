@@ -62,7 +62,7 @@ preflights are answered, so browser dashboard clients work cross-origin.
 | `GET /v1/tracks/:id` | TrackDto |
 | `GET /v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult (fixed order: artist, title — may differ from the desktop's sort) |
 | `GET /v1/tracks/:id/waveform/summary` | binary MXWF blob (T09) |
-| `GET /v1/tracks/:id/cues` | cue/loop markers (T09) |
+| `GET /v1/tracks/:id/cues` | cue/loop markers (T09). Decks also get this pushed as `deck.cues` — prefer that. |
 | `GET /v1/tracks/:id/beatgrid` | `{trackId,bpm,constantTempo,beats:[seconds],truncated?}` (≤4096 beats, stops at track end). Decks also get this pushed as `deck.beatgrid` — prefer that. |
 | `GET /v1/tracks/:id/cover` | cover art JPEG, ≤512px (404 if none) |
 | `GET /v1/pair/code` | session pairing code (loopback only) |
@@ -191,6 +191,37 @@ track that has already been replaced.
   "bpm": 129.98,
   "constantTempo": true,
   "beats": [0.021, 0.483, 0.945, 1.407],
+  "serverTimeMs": 182934701
+}
+```
+
+`deck.cues` — the deck's cue points, pushed on the same schedule as
+`deck.beatgrid`: right after `deck.loaded`, again on **every** cue change (hotcue
+set, cleared or moved, label or colour edited, intro/outro adjusted), and
+replayed on client connect. Same payload as `GET /v1/tracks/:id/cues` minus
+`trackId`, plus the deck framing.
+
+`positionSeconds` is seconds from the start of the track — draw markers from it
+rather than deriving anything from the waveform. `lengthSeconds` is present for
+cues with an end (loop, intro, outro). `index` is the hotcue number and is absent
+for cues that are not hotcues. `cues` is always present and may be empty. Bursts
+are coalesced (~200 ms), so a "clear all hotcues" arrives as one event, not four.
+
+The same `generation` rule applies: drop events for a generation that is no
+longer the deck's.
+
+```json
+{
+  "type": "deck.cues",
+  "deck": 1,
+  "generation": 42,
+  "cues": [
+    { "type": "maincue", "positionSeconds": 0.512, "color": "#ff8000" },
+    { "type": "hotcue", "index": 0, "positionSeconds": 32.145,
+      "label": "drop", "color": "#3f51b5" },
+    { "type": "loop", "positionSeconds": 64.0, "lengthSeconds": 8.0,
+      "color": "#00b400" }
+  ],
   "serverTimeMs": 182934701
 }
 ```

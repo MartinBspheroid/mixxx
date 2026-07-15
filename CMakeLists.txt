@@ -2860,6 +2860,7 @@ if(BUILD_TESTING)
       mixxx-test
       PRIVATE
         src/test/companionwaveformtest.cpp
+        src/test/companioncuewatchtest.cpp
         src/test/companionharmonictest.cpp
         src/test/companionnetworkinfotest.cpp
         src/test/companionpairingcodetest.cpp

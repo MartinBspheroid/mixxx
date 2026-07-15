@@ -84,7 +84,7 @@ Codes: `bad_request` (400), `unauthorized` (401), `action_not_allowed` (403),
 | GET | `/v1/decks` | array of deck snapshots |
 | GET | `/v1/decks/:deck` | one deck snapshot (1-based) |
 | GET | `/v1/tracks/:id` | TrackDto |
-| GET | `/v1/tracks/:id/cues` | cue markers |
+| GET | `/v1/tracks/:id/cues` | cue markers (for a deck, prefer the pushed `deck.cues`) |
 | GET | `/v1/tracks/:id/waveform/summary` | binary MXWF blob (§6) |
 | GET | `/v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult |
 | POST | `/v1/decks/:deck/load` `{trackId,play}` | load track to deck (202) |
@@ -132,6 +132,18 @@ second event once analysis lands, instead of polling the HTTP endpoint:
 ```json
 { "type":"deck.beatgrid", "deck":1, "generation":42, "bpm":129.98,
   "constantTempo":true, "beats":[0.021, 0.483, 0.945], "serverTimeMs":182934701 }
+```
+`deck.cues` (after `deck.loaded`, on every cue change, and replayed on connect).
+`positionSeconds` is seconds from the track start; `lengthSeconds` appears for
+loop/intro/outro; `index` is the hotcue number and is absent for non-hotcues.
+Cue edits during a set — setting, clearing, moving a hotcue — re-fire this, so
+render straight from it and never cache it against a track:
+```json
+{ "type":"deck.cues", "deck":1, "generation":42, "serverTimeMs":182934701,
+  "cues":[ { "type":"hotcue", "index":0, "positionSeconds":32.145,
+             "label":"drop", "color":"#3f51b5" },
+           { "type":"loop", "positionSeconds":64.0, "lengthSeconds":8.0,
+             "color":"#00b400" } ] }
 ```
 `deck.tick` (10–20 Hz while state changes, ≥1 Hz keepalive):
 ```json

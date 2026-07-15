@@ -7,10 +7,12 @@
 #include "audio/types.h"
 #include "companion/trackserializer.h"
 #include "track/beats.h"
+#include "track/cue.h"
 #include "track/track.h"
 #include "track/trackid.h"
 
 using mixxx::companion::serializeBeatgrid;
+using mixxx::companion::serializeCues;
 using mixxx::companion::serializeTrack;
 
 namespace {
@@ -132,6 +134,107 @@ TEST(CompanionTrackSerializerTest, BeatgridIsTruncatedAndFlagged) {
     EXPECT_EQ(dto.value("beats").toArray().size(),
             mixxx::companion::kMaxBeatgridBeats);
     EXPECT_TRUE(dto.value("truncated").toBool());
+}
+
+// --- Cue points (deck.cues payload / GET /v1/tracks/:id/cues) ---
+
+TrackPointer makeTrackForCues() {
+    TrackPointer pTrack(Track::newTemporary());
+    pTrack->setAudioProperties(mixxx::audio::ChannelCount(2),
+            kSampleRate,
+            mixxx::audio::Bitrate(),
+            mixxx::Duration::fromSeconds(180));
+    return pTrack;
+}
+
+QJsonObject findCueByIndex(const QJsonArray& cues, int index) {
+    for (const QJsonValue& value : cues) {
+        const QJsonObject cue = value.toObject();
+        if (cue.value("index").toInt(-1) == index) {
+            return cue;
+        }
+    }
+    return QJsonObject();
+}
+
+// The positions are the whole point: a hotcue at frame N must come out as
+// N/sampleRate seconds, or the phone draws its markers in the wrong place.
+TEST(CompanionTrackSerializerTest, CuePositionsAreExactSeconds) {
+    TrackPointer pTrack = makeTrackForCues();
+    // 44100 frames == exactly 1.0s, 66150 == 1.5s, 3528000 == 80.0s.
+    pTrack->createAndAddCue(mixxx::CueType::HotCue,
+            0,
+            mixxx::audio::FramePos(44100),
+            mixxx::audio::FramePos());
+    pTrack->createAndAddCue(mixxx::CueType::HotCue,
+            1,
+            mixxx::audio::FramePos(66150),
+            mixxx::audio::FramePos());
+    pTrack->createAndAddCue(mixxx::CueType::HotCue,
+            2,
+            mixxx::audio::FramePos(3528000),
+            mixxx::audio::FramePos());
+
+    const QJsonArray cues = serializeCues(pTrack).value("cues").toArray();
+    ASSERT_EQ(cues.size(), 3);
+    EXPECT_NEAR(findCueByIndex(cues, 0).value("positionSeconds").toDouble(),
+            1.0,
+            1e-9);
+    EXPECT_NEAR(findCueByIndex(cues, 1).value("positionSeconds").toDouble(),
+            1.5,
+            1e-9);
+    EXPECT_NEAR(findCueByIndex(cues, 2).value("positionSeconds").toDouble(),
+            80.0,
+            1e-9);
+}
+
+TEST(CompanionTrackSerializerTest, CueCarriesTypeIndexLabelAndColor) {
+    TrackPointer pTrack = makeTrackForCues();
+    const CuePointer pCue = pTrack->createAndAddCue(mixxx::CueType::HotCue,
+            3,
+            mixxx::audio::FramePos(44100),
+            mixxx::audio::FramePos(),
+            mixxx::RgbColor(0x3F51B5));
+    pCue->setLabel(QStringLiteral("drop"));
+
+    const QJsonArray cues = serializeCues(pTrack).value("cues").toArray();
+    ASSERT_EQ(cues.size(), 1);
+    const QJsonObject cue = cues.at(0).toObject();
+    EXPECT_EQ(cue.value("type").toString(), QStringLiteral("hotcue"));
+    EXPECT_EQ(cue.value("index").toInt(), 3);
+    EXPECT_EQ(cue.value("label").toString(), QStringLiteral("drop"));
+    EXPECT_EQ(cue.value("color").toString(), QStringLiteral("#3f51b5"));
+}
+
+// A loop/intro/outro has an end, and the phone needs its extent, not just where
+// it starts.
+TEST(CompanionTrackSerializerTest, CueWithEndReportsLength) {
+    TrackPointer pTrack = makeTrackForCues();
+    pTrack->createAndAddCue(mixxx::CueType::Loop,
+            -1,
+            mixxx::audio::FramePos(44100),   // 1.0s
+            mixxx::audio::FramePos(220500)); // 5.0s
+
+    const QJsonArray cues = serializeCues(pTrack).value("cues").toArray();
+    ASSERT_EQ(cues.size(), 1);
+    const QJsonObject cue = cues.at(0).toObject();
+    EXPECT_EQ(cue.value("type").toString(), QStringLiteral("loop"));
+    EXPECT_NEAR(cue.value("positionSeconds").toDouble(), 1.0, 1e-9);
+    EXPECT_NEAR(cue.value("lengthSeconds").toDouble(), 4.0, 1e-9);
+    // A plain cue has no index; the key must be absent rather than -1.
+    EXPECT_FALSE(cue.contains("index"));
+}
+
+TEST(CompanionTrackSerializerTest, CuesWithoutCuesIsEmptyNotMissing) {
+    const QJsonObject dto = serializeCues(makeTrackForCues());
+    ASSERT_TRUE(dto.contains("cues"));
+    EXPECT_TRUE(dto.value("cues").toArray().isEmpty());
+}
+
+TEST(CompanionTrackSerializerTest, CuesNullTrackYieldsEmptyCues) {
+    const QJsonObject dto = serializeCues(TrackPointer());
+    ASSERT_TRUE(dto.contains("cues"));
+    EXPECT_TRUE(dto.value("cues").toArray().isEmpty());
 }
 
 } // namespace

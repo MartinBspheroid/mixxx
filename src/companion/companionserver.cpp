@@ -341,26 +341,48 @@ void CompanionServer::onDeckLoaded(
     snapshot.generation = generation;
     snapshot.loadedEvent = event;
     snapshot.beatgridEvent = QJsonObject();
+    snapshot.cuesEvent = QJsonObject();
     snapshot.lastTick = QJsonObject();
     broadcast(event, /*droppable*/ false);
 }
 
 void CompanionServer::onDeckBeatgrid(
         int deck, quint64 generation, const QJsonObject& beatgrid) {
+    // Not droppable: unlike a tick, a grid is not refreshed on a timer, so a
+    // skipped one leaves the phone drawing beat markers that never arrive.
+    broadcastDeckDetail(deck,
+            generation,
+            beatgrid,
+            QStringLiteral("deck.beatgrid"),
+            &DeckSnapshot::beatgridEvent);
+}
+
+void CompanionServer::onDeckCues(
+        int deck, quint64 generation, const QJsonObject& cues) {
+    broadcastDeckDetail(deck,
+            generation,
+            cues,
+            QStringLiteral("deck.cues"),
+            &DeckSnapshot::cuesEvent);
+}
+
+void CompanionServer::broadcastDeckDetail(int deck,
+        quint64 generation,
+        const QJsonObject& payload,
+        const QString& type,
+        QJsonObject DeckSnapshot::*snapshotField) {
     auto it = m_deckSnapshots.find(deck);
     if (it == m_deckSnapshots.end() || !it->loaded ||
             it->generation != generation) {
         // Stale: the deck was emptied, or a newer track already took it over.
         return;
     }
-    QJsonObject event = beatgrid;
-    event.insert(QStringLiteral("type"), QStringLiteral("deck.beatgrid"));
+    QJsonObject event = payload;
+    event.insert(QStringLiteral("type"), type);
     event.insert(QStringLiteral("deck"), deck);
     event.insert(QStringLiteral("generation"), static_cast<qint64>(generation));
     event.insert(QStringLiteral("serverTimeMs"), serverTimeMs());
-    it->beatgridEvent = event;
-    // Not droppable: unlike a tick, a grid is not refreshed on a timer, so a
-    // skipped one leaves the phone drawing beat markers that never arrive.
+    (*it).*snapshotField = event;
     broadcast(event, /*droppable*/ false);
 }
 
@@ -370,6 +392,7 @@ void CompanionServer::onDeckUnloaded(int deck, quint64 generation) {
     snapshot.generation = generation;
     snapshot.loadedEvent = QJsonObject();
     snapshot.beatgridEvent = QJsonObject();
+    snapshot.cuesEvent = QJsonObject();
     snapshot.lastTick = QJsonObject();
 
     QJsonObject event;
@@ -438,6 +461,10 @@ void CompanionServer::sendReplay(QWebSocket* pClient) {
         if (!it->beatgridEvent.isEmpty()) {
             pClient->sendTextMessage(QString::fromUtf8(QJsonDocument(
                     it->beatgridEvent).toJson(QJsonDocument::Compact)));
+        }
+        if (!it->cuesEvent.isEmpty()) {
+            pClient->sendTextMessage(QString::fromUtf8(
+                    QJsonDocument(it->cuesEvent).toJson(QJsonDocument::Compact)));
         }
         if (!it->lastTick.isEmpty()) {
             pClient->sendTextMessage(QString::fromUtf8(
