@@ -1,6 +1,7 @@
 #include "preferences/dialog/dlgprefcompanion.h"
 
 #include "companion/companionsettings.h"
+#include "companion/networkinfo.h"
 #include "moc_dlgprefcompanion.cpp"
 
 DlgPrefCompanion::DlgPrefCompanion(QWidget* pParent,
@@ -15,6 +16,16 @@ DlgPrefCompanion::DlgPrefCompanion(QWidget* pParent,
             &QPushButton::clicked,
             this,
             &DlgPrefCompanion::slotRegenerate);
+    // The address is derived from these two, so track them as they are edited
+    // rather than only on Apply -- the user is reading it to decide what to set.
+    connect(checkBoxAllowLan,
+            &QCheckBox::toggled,
+            this,
+            &DlgPrefCompanion::refreshAddress);
+    connect(spinBoxPort,
+            QOverload<int>::of(&QSpinBox::valueChanged),
+            this,
+            [this](int) { refreshAddress(); });
     if (m_pService) {
         // Keep the code/status label live while the page is open.
         connect(m_pService,
@@ -46,6 +57,8 @@ void DlgPrefCompanion::refreshLiveState() {
     labelCodeCaption->setEnabled(!code.isEmpty());
     pushButtonRegenerate->setEnabled(!code.isEmpty());
 
+    refreshAddress();
+
     if (!m_pService) {
         labelStatus->setText(tr("Status: unavailable"));
     } else if (running) {
@@ -54,6 +67,66 @@ void DlgPrefCompanion::refreshLiveState() {
     } else {
         labelStatus->setText(
                 tr("Status: stopped (enable and click Apply to start)"));
+    }
+}
+
+void DlgPrefCompanion::refreshAddress() {
+    // Reflect the widgets, not the saved settings: the user is reading this to
+    // find out what the choices they are making right now will give them.
+    const int port = spinBoxPort->value();
+
+    if (!checkBoxAllowLan->isChecked()) {
+        // The server binds loopback in this mode, so no phone can reach it.
+        // Saying "127.0.0.1" without that caveat would just waste the user's
+        // time typing an address that cannot work.
+        labelAddress->setText(
+                QStringLiteral("127.0.0.1:%1").arg(port));
+        labelAddressHint->setText(
+                tr("Only apps on this computer can connect. Tick "
+                   "\"Allow connections from other devices\" to reach Mixxx "
+                   "from your phone."));
+        return;
+    }
+
+    const QList<QHostAddress> addresses =
+            mixxx::companion::reachableIPv4Addresses();
+    if (addresses.isEmpty()) {
+        labelAddress->setText(tr("no network address"));
+        labelAddressHint->setText(
+                tr("This computer has no network connection, so no phone can "
+                   "reach it. Connect it to the same Wi-Fi as your phone."));
+        return;
+    }
+
+    labelAddress->setText(
+            QStringLiteral("%1:%2").arg(addresses.first().toString()).arg(port));
+
+    if (addresses.size() > 1) {
+        // Multi-homed (VPN, ethernet + Wi-Fi, docker bridges, ...): we cannot
+        // know which network the phone is on, so name the alternatives instead
+        // of guessing silently. Cap the list -- a machine running containers can
+        // have a dozen, and a wall of them helps nobody.
+        constexpr int kMaxAlternatives = 3;
+        QStringList others;
+        for (int i = 1; i < addresses.size() && others.size() < kMaxAlternatives;
+                ++i) {
+            others.append(QStringLiteral("%1:%2")
+                                  .arg(addresses.at(i).toString())
+                                  .arg(port));
+        }
+        const int remaining = addresses.size() - 1 - others.size();
+        QString alternatives = others.join(QStringLiteral(", "));
+        if (remaining > 0) {
+            alternatives = tr("%1 (and %n more)", "", remaining)
+                                   .arg(alternatives);
+        }
+        labelAddressHint->setText(
+                tr("This computer has more than one network address. If the "
+                   "first does not work, try: %1")
+                        .arg(alternatives));
+    } else {
+        labelAddressHint->setText(
+                tr("Your phone must be on the same Wi-Fi as this computer."));
     }
 }
 

@@ -2861,6 +2861,7 @@ if(BUILD_TESTING)
       PRIVATE
         src/test/companionwaveformtest.cpp
         src/test/companionharmonictest.cpp
+        src/test/companionnetworkinfotest.cpp
         src/test/companionpairingcodetest.cpp
         src/test/companionpairingtest.cpp
         src/test/companionhttptest.cpp
@@ -2868,9 +2869,13 @@ if(BUILD_TESTING)
     )
     # companionpairingcodetest.cpp instantiates the Companion preferences page.
     # AUTOUIC generates ui_dlgprefcompaniondlg.h into mixxx-lib's autogen dir,
-    # which is not on mixxx-test's include path by default.
+    # which is not on mixxx-test's include path by default. The explicit
+    # dependency is required: linking mixxx-lib does not order mixxx-test's
+    # *compile* steps after AUTOUIC, so without it a parallel or fresh build can
+    # compile the test against a stale or missing header.
     target_include_directories(
       mixxx-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/mixxx-lib_autogen/include")
+    add_dependencies(mixxx-test mixxx-lib_autogen)
   endif()
 
   set_target_properties(mixxx-test PROPERTIES AUTOMOC ON)
@@ -5000,6 +5005,8 @@ if(COMPANION_API)
       src/companion/deckstatepublisher.h
       src/companion/harmonic.cpp
       src/companion/harmonic.h
+      src/companion/networkinfo.cpp
+      src/companion/networkinfo.h
       src/companion/pairingmanager.cpp
       src/companion/pairingmanager.h
       src/companion/trackserializer.cpp

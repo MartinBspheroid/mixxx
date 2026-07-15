@@ -41,6 +41,13 @@ it**, and it survives enabling the API or changing the port (both restart the
 server) so a phone you already paired keeps working. Only quitting Mixxx or
 clicking **Regenerate** changes it.
 
+That page also shows the **address to open on the phone** (`<ip>:<port>`), so
+there is no need to go hunting for the machine's IP. LAN addresses are preferred
+over VPN-overlay ones (Tailscale, 100.64/10) and both over routable addresses; a
+multi-homed machine lists the alternatives, since only the user knows which
+network the phone is on. With LAN off the server binds loopback, and the page
+says so rather than offering an address no phone can reach.
+
 Pass it on every request:
 
 ```

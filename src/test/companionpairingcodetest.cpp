@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <QCheckBox>
 #include <QDir>
 #include <QLabel>
 #include <QPushButton>
@@ -86,9 +87,17 @@ TEST_F(CompanionPairingCodeTest, PreferencesPageShowsCodeWhileStopped) {
     // Render it when asked, so the page can be eyeballed without a display.
     const QString outDir = qEnvironmentVariable("COMPANION_PREF_SHOT_DIR");
     if (!outDir.isEmpty()) {
-        page.resize(560, 300);
+        page.resize(560, 420);
         ASSERT_TRUE(page.grab().save(QDir(outDir).filePath(
                 QStringLiteral("companion_prefs_stopped.png"))));
+
+        // ...and again with LAN on, which is the state you actually pair from.
+        auto* pAllowLan =
+                page.findChild<QCheckBox*>(QStringLiteral("checkBoxAllowLan"));
+        ASSERT_NE(pAllowLan, nullptr);
+        pAllowLan->setChecked(true);
+        ASSERT_TRUE(page.grab().save(QDir(outDir).filePath(
+                QStringLiteral("companion_prefs_lan.png"))));
     }
 }
 

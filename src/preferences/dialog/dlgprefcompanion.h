@@ -6,7 +6,8 @@
 #include "preferences/usersettings.h"
 
 /// Preferences page for the Companion API: enable/port/LAN plus a live display
-/// of the session pairing code (what the user types on their phone).
+/// of everything needed to connect a phone -- the address to open and the
+/// session pairing code to type.
 class DlgPrefCompanion : public DlgPreferencePage,
                          public Ui::DlgPrefCompanionDlg {
     Q_OBJECT
@@ -24,6 +25,9 @@ class DlgPrefCompanion : public DlgPreferencePage,
   private slots:
     void slotRegenerate();
     void refreshLiveState();
+    /// Recompute the "open this on your phone" address from the current widget
+    /// state (port + LAN toggle), independent of what is saved or running.
+    void refreshAddress();
 
   private:
     const UserSettingsPointer m_pConfig;
