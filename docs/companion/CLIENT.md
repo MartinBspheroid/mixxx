@@ -91,6 +91,8 @@ Codes: `bad_request` (400), `unauthorized` (401), `action_not_allowed` (403),
 | POST | `/v1/decks/:deck/load` `{trackId,play}` | load track to deck (202) |
 | POST | `/v1/decks/:deck/play` \| `pause` \| `cue` \| `sync` | transport |
 | POST | `/v1/decks/:deck/seek` `{position}` | seek 0..1 (refused while playing unless `force`) |
+| POST | `/v1/decks/:deck/stems/:stem/volume` `{value}` | set stem volume 0..1 (stem 1-based; stem tracks only) |
+| POST | `/v1/decks/:deck/stems/:stem/mute` `{muted}` | mute/unmute a stem (idempotent; default `true`) |
 | POST | `/v1/autodj/queue` `{trackId}` | append to Auto DJ (202) |
 | POST | `/v1/pair` | open pairing window (loopback only) |
 | POST | `/v1/pair/claim` `{code,deviceName,readOnly}` | claim a token |
@@ -122,10 +124,13 @@ The server pushes events; the client may send a few messages.
 ```json
 { "type":"deck.loaded", "deck":1, "generation":42,
   "track":{ "id":1234, "title":"Glue", "artist":"Bicep", "bpm":129.98,
-            "key":"8A", "durationSeconds":269.3, "rating":4, "color":"#3F51B5" },
+            "key":"8A", "durationSeconds":269.3, "rating":4, "color":"#3F51B5",
+            "stems":[ {"label":"Drums","color":"#3f51b5"}, {"label":"Bass"} ] },
   "waveform":{ "summaryUrl":"/v1/tracks/1234/waveform/summary" },
   "serverTimeMs":182934701 }
 ```
+`track.stems` (static label/color, in stem order) is present only for stem
+tracks; live per-stem `volume`/`muted` streams in `deck.tick`, joined by index.
 `deck.beatgrid` (after `deck.loaded`, on every grid change, and replayed on
 connect). `beats` is in seconds from the track start, stops at the track end, and
 is empty until the track is analyzed — so draw ticks from this and expect a
@@ -150,8 +155,12 @@ render straight from it and never cache it against a track:
 ```json
 { "type":"deck.tick", "deck":1, "generation":42, "playposition":0.437,
   "positionSeconds":117.7, "durationSeconds":269.3, "rate":1.0,
-  "playing":true, "vu":0.74, "serverTimeMs":182934701 }
+  "playing":true, "vu":0.74, "serverTimeMs":182934701,
+  "stems":[ {"volume":1.0,"muted":false}, {"volume":0.0,"muted":true} ] }
 ```
+`stems` (live per-stem `volume` 0..1 + `muted`, by index) is present only for
+stem tracks; a stem change fires a tick and the ≥1 Hz keepalive re-sends current
+values, so a dropped update self-corrects within a second.
 `deck.seek` (immediate on jumps): `{ "type":"deck.seek", "deck":1, "generation":42, "playposition":0.61, "serverTimeMs":… }`
 `deck.unloaded`: `{ "type":"deck.unloaded", "deck":1, "generation":43 }`
 

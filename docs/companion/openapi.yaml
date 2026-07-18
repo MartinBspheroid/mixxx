@@ -210,6 +210,37 @@ paths:
       responses:
         "200": {description: OK}
         "409": {description: Deck is playing and force not set}
+  /v1/decks/{deck}/stems/{stem}/volume:
+    post:
+      summary: Set a stem's volume (stem tracks only)
+      parameters:
+        - {name: deck, in: path, required: true, schema: {type: integer}}
+        - {name: stem, in: path, required: true, schema: {type: integer, description: "1-based stem index"}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties: {value: {type: number, minimum: 0, maximum: 1}}
+      responses:
+        "200": {description: OK}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /v1/decks/{deck}/stems/{stem}/mute:
+    post:
+      summary: Mute/unmute a stem (idempotent; stem tracks only)
+      parameters:
+        - {name: deck, in: path, required: true, schema: {type: integer}}
+        - {name: stem, in: path, required: true, schema: {type: integer, description: "1-based stem index"}}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {muted: {type: boolean, default: true}}
+      responses:
+        "200": {description: OK}
+        "404": {$ref: "#/components/responses/NotFound"}
   /v1/autodj/queue:
     post:
       summary: Append a track to the Auto DJ queue

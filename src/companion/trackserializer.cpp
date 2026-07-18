@@ -7,6 +7,10 @@
 #include "track/track.h"
 #include "util/color/rgbcolor.h"
 
+#ifdef __STEM__
+#include <QColor>
+#endif
+
 namespace mixxx {
 namespace companion {
 
@@ -168,6 +172,22 @@ QJsonObject serializeCues(const TrackPointer& pTrack) {
     dto.insert(QStringLiteral("cues"), cues);
     return dto;
 }
+
+#ifdef __STEM__
+QJsonArray serializeStems(const QList<StemInfo>& stems) {
+    QJsonArray array;
+    for (const StemInfo& stem : stems) {
+        QJsonObject obj;
+        obj.insert(QStringLiteral("label"), stem.getLabel());
+        const QColor color = stem.getColor();
+        if (color.isValid()) {
+            obj.insert(QStringLiteral("color"), color.name(QColor::HexRgb));
+        }
+        array.append(obj);
+    }
+    return array;
+}
+#endif
 
 } // namespace companion
 } // namespace mixxx

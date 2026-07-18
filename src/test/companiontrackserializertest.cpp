@@ -11,6 +11,12 @@
 #include "track/track.h"
 #include "track/trackid.h"
 
+#ifdef __STEM__
+#include <QColor>
+
+#include "track/steminfo.h"
+#endif
+
 using mixxx::companion::serializeBeatgrid;
 using mixxx::companion::serializeCues;
 using mixxx::companion::serializeTrack;
@@ -236,5 +242,41 @@ TEST(CompanionTrackSerializerTest, CuesNullTrackYieldsEmptyCues) {
     ASSERT_TRUE(dto.contains("cues"));
     EXPECT_TRUE(dto.value("cues").toArray().isEmpty());
 }
+
+// --- Stems (deck.loaded track.stems / static per-stem metadata) ---
+
+#ifdef __STEM__
+
+TEST(CompanionTrackSerializerTest, StemsCarryLabelAndColorInOrder) {
+    const QList<StemInfo> stems = {
+            StemInfo(QStringLiteral("Drums"), QColor(0x3F, 0x51, 0xB5)),
+            StemInfo(QStringLiteral("Bass"), QColor(0x00, 0xB4, 0x00)),
+            StemInfo(QStringLiteral("Melody"), QColor(0xFF, 0x99, 0x00)),
+            StemInfo(QStringLiteral("Vocals"), QColor(0xE0, 0x00, 0x40))};
+    const QJsonArray array = mixxx::companion::serializeStems(stems);
+    ASSERT_EQ(array.size(), 4);
+    EXPECT_EQ(array.at(0).toObject().value("label").toString(),
+            QStringLiteral("Drums"));
+    EXPECT_EQ(array.at(0).toObject().value("color").toString(),
+            QStringLiteral("#3f51b5"));
+    // Order is the stem index the live deck.tick joins against.
+    EXPECT_EQ(array.at(3).toObject().value("label").toString(),
+            QStringLiteral("Vocals"));
+}
+
+TEST(CompanionTrackSerializerTest, StemWithInvalidColorOmitsColor) {
+    const QList<StemInfo> stems = {StemInfo(QStringLiteral("Drums"), QColor())};
+    const QJsonArray array = mixxx::companion::serializeStems(stems);
+    ASSERT_EQ(array.size(), 1);
+    const QJsonObject stem = array.at(0).toObject();
+    EXPECT_EQ(stem.value("label").toString(), QStringLiteral("Drums"));
+    EXPECT_FALSE(stem.contains("color"));
+}
+
+TEST(CompanionTrackSerializerTest, NoStemsYieldsEmptyArray) {
+    EXPECT_TRUE(mixxx::companion::serializeStems(QList<StemInfo>()).isEmpty());
+}
+
+#endif // __STEM__
 
 } // namespace

@@ -4,6 +4,13 @@
 
 #include "track/track_decl.h"
 
+#ifdef __STEM__
+#include <QJsonArray>
+#include <QList>
+
+#include "track/steminfo.h"
+#endif
+
 namespace mixxx {
 namespace companion {
 
@@ -42,6 +49,14 @@ constexpr int kMaxBeatgridBeats = 4096;
 ///
 /// MUST be called on the main thread, for the same reason as serializeTrack().
 QJsonObject serializeCues(const TrackPointer& pTrack);
+
+#ifdef __STEM__
+/// Serializes a stem track's static per-stem metadata into a JSON array of
+/// `{label, color?}`, in stem order (index 0..N-1). Live per-stem volume/mute
+/// state is not here -- it streams in `deck.tick` and is joined by index. Only
+/// meaningful for stem tracks (`Track::hasStem()`); an empty list yields `[]`.
+QJsonArray serializeStems(const QList<StemInfo>& stems);
+#endif
 
 } // namespace companion
 } // namespace mixxx

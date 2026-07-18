@@ -139,6 +139,10 @@ class CompanionServer : public QObject {
     HttpResponse handleSearch(const HttpRequest& request);
     HttpResponse handleDeckAction(
             int deck, const QByteArray& action, const HttpRequest& request);
+    HttpResponse handleStemAction(int deck,
+            int stem,
+            const QByteArray& action,
+            const HttpRequest& request);
     bool isValidDeck(int deck) const;
     void sendReplay(QWebSocket* pClient);
     qint64 serverTimeMs() const;

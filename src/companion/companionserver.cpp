@@ -804,6 +804,24 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
         return HttpResponse::json(202, "{\"ok\":true,\"status\":\"queued\"}");
     }
 
+    // POST /v1/decks/:deck/stems/:stem/:action  (mute | volume)
+    if (request.method == "POST" && segments.size() == 6 &&
+            segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("decks") &&
+            segments.at(3) == QLatin1String("stems")) {
+        bool deckOk = false;
+        bool stemOk = false;
+        const int deck = segments.at(2).toInt(&deckOk);
+        const int stem = segments.at(4).toInt(&stemOk);
+        if (!deckOk || !stemOk) {
+            return HttpResponse::error(400, "bad_request", "invalid deck or stem");
+        }
+        if (!isValidDeck(deck)) {
+            return HttpResponse::error(404, "not_found", "no such deck");
+        }
+        return handleStemAction(deck, stem, segments.at(5).toUtf8(), request);
+    }
+
     // POST /v1/decks/:deck/:action
     if (request.method == "POST" && segments.size() == 4 &&
             segments.at(0) == QLatin1String("v1") &&
@@ -820,6 +838,44 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
     }
 
     return HttpResponse::error(404, "not_found");
+}
+
+HttpResponse CompanionServer::handleStemAction(
+        int deck, int stem, const QByteArray& action, const HttpRequest& request) {
+    // Stem mix control (HUD-safe: these are mix decisions the phone can own).
+    // Groups/controls only exist for stem tracks; validate against the live
+    // stem_count so a normal track or an out-of-range stem is a clean 404.
+    const QString deckGroup = PlayerManager::groupForDeck(deck - 1);
+    const int stemCount =
+            static_cast<int>(ControlObject::get(ConfigKey(deckGroup,
+                    QStringLiteral("stem_count"))));
+    if (stemCount <= 0) {
+        return HttpResponse::error(404, "not_found", "deck has no stems");
+    }
+    if (stem < 1 || stem > stemCount) {
+        return HttpResponse::error(404, "not_found", "no such stem");
+    }
+    const QString stemGroup =
+            QStringLiteral("[Channel%1_Stem%2]").arg(deck).arg(stem);
+    const QJsonObject body = QJsonDocument::fromJson(request.body).object();
+
+    if (action == "volume") {
+        if (!body.contains(QStringLiteral("value"))) {
+            return HttpResponse::error(400, "bad_request", "missing value");
+        }
+        const double value = qBound(0.0, body.value(QStringLiteral("value")).toDouble(), 1.0);
+        ControlObject::set(ConfigKey(stemGroup, QStringLiteral("volume")), value);
+        return HttpResponse::json(200, QByteArrayLiteral("{\"ok\":true}"));
+    }
+    if (action == "mute") {
+        // Explicit set (default true) rather than toggle, so a retimed retry
+        // from the phone is idempotent.
+        const bool muted = body.value(QStringLiteral("muted")).toBool(true);
+        ControlObject::set(ConfigKey(stemGroup, QStringLiteral("mute")),
+                muted ? 1.0 : 0.0);
+        return HttpResponse::json(200, QByteArrayLiteral("{\"ok\":true}"));
+    }
+    return HttpResponse::error(404, "not_found", "unknown stem action");
 }
 
 bool CompanionServer::isValidDeck(int deck) const {

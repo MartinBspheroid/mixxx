@@ -56,6 +56,9 @@ class DeckStatePublisher : public QObject {
         bool loopEnabled = false; ///< loop state at last emit (change gate)
         int syncMode = 0;         ///< sync mode at last emit (change gate)
         bool keylock = false;     ///< keylock at last emit (change gate)
+        int stemCount = 0;             ///< stem_count at last emit (0 = normal track)
+        QVector<double> stemVolumes;   ///< per-stem volume at last emit (change gate)
+        QVector<bool> stemMutes;       ///< per-stem mute at last emit (change gate)
     };
     double m_emitMasterVu = 0.0; ///< master vu at last emit (change gate)
     qint64 m_masterEmitMs = 0;

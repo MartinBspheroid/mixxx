@@ -1,9 +1,11 @@
 #include "companion/deckstatepublisher.h"
 
+#include <QJsonArray>
 #include <QTimer>
 #include <cmath>
 
 #include "control/controlobject.h"
+#include "engine/engine.h"
 #include "mixer/playermanager.h"
 #include "preferences/configobject.h"
 
@@ -12,6 +14,7 @@ namespace {
 // unchanged and no tick is sent (a keepalive still fires once per second).
 constexpr double kPositionEpsilon = 1e-4;
 constexpr double kVuEpsilon = 0.01;
+constexpr double kStemEpsilon = 0.005;
 constexpr qint64 kKeepaliveMs = 1000;
 
 // A position jump larger than this multiple of the distance normal playback
@@ -86,6 +89,9 @@ void DeckStatePublisher::onTimeout() {
         const bool loaded = controlGet(group, "track_loaded") != 0.0;
         if (!loaded) {
             sample.loaded = false;
+            sample.stemCount = 0;
+            sample.stemVolumes.clear();
+            sample.stemMutes.clear();
             continue;
         }
 
@@ -97,6 +103,36 @@ void DeckStatePublisher::onTimeout() {
         const bool loopEnabled = controlGet(group, "loop_enabled") != 0.0;
         const int syncMode = static_cast<int>(controlGet(group, "sync_mode"));
         const bool keylock = controlGet(group, "keylock") != 0.0;
+
+        // Stems: only stem tracks have a non-zero stem_count; on a normal track
+        // the stem controls do not exist and ControlObject::get() returns 0, so
+        // this is naturally a no-op (and needs no __STEM__ guard). The group is
+        // built inline to avoid depending on the __STEM__-only PlayerManager
+        // helper.
+        const int stemCount = static_cast<int>(controlGet(group, "stem_count"));
+        QVector<double> stemVolumes;
+        QVector<bool> stemMutes;
+        if (stemCount > 0) {
+            const int n = std::min(stemCount, mixxx::kMaxSupportedStems);
+            stemVolumes.reserve(n);
+            stemMutes.reserve(n);
+            for (int s = 0; s < n; ++s) {
+                const QString stemGroup =
+                        QStringLiteral("[Channel%1_Stem%2]").arg(deck).arg(s + 1);
+                stemVolumes.append(controlGet(stemGroup, "volume"));
+                stemMutes.append(controlGet(stemGroup, "mute") != 0.0);
+            }
+        }
+        bool stemsChanged = stemCount != sample.stemCount ||
+                stemVolumes.size() != sample.stemVolumes.size() ||
+                stemMutes.size() != sample.stemMutes.size();
+        for (int s = 0; !stemsChanged && s < stemVolumes.size(); ++s) {
+            if (std::fabs(stemVolumes.at(s) - sample.stemVolumes.at(s)) >
+                            kStemEpsilon ||
+                    stemMutes.at(s) != sample.stemMutes.at(s)) {
+                stemsChanged = true;
+            }
+        }
 
         bool isSeek = false;
         if (sample.loaded && duration > 0.0) {
@@ -115,7 +151,8 @@ void DeckStatePublisher::onTimeout() {
                 std::fabs(vu - sample.emitVu) > kVuEpsilon ||
                 loopEnabled != sample.loopEnabled ||
                 syncMode != sample.syncMode ||
-                keylock != sample.keylock;
+                keylock != sample.keylock ||
+                stemsChanged;
         const bool keepalive = (nowMs - sample.emitMs) >= kKeepaliveMs;
 
         if (isSeek) {
@@ -160,10 +197,25 @@ void DeckStatePublisher::onTimeout() {
                                     trackSamples);
                 }
             }
+            // Stems: live per-stem mix state, by index (labels/colors come once
+            // in deck.loaded). Present only for stem tracks.
+            if (stemCount > 0) {
+                QJsonArray stems;
+                for (int s = 0; s < stemVolumes.size(); ++s) {
+                    QJsonObject stem;
+                    stem.insert(QStringLiteral("volume"), stemVolumes.at(s));
+                    stem.insert(QStringLiteral("muted"), stemMutes.at(s));
+                    stems.append(stem);
+                }
+                event.insert(QStringLiteral("stems"), stems);
+            }
             emit tickReady(deck, event);
             sample.emitPosition = position;
             sample.emitVu = vu;
             sample.emitMs = nowMs;
+            sample.stemCount = stemCount;
+            sample.stemVolumes = stemVolumes;
+            sample.stemMutes = stemMutes;
         }
 
         sample.loaded = true;

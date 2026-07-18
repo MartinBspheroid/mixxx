@@ -329,7 +329,15 @@ void CompanionService::onDeckLoaded(int deckIndex, const TrackPointer& pTrack) {
     const int deck = deckIndex + 1;
     const quint64 generation = ++m_generations[deck];
     const CompanionSettings settings(m_pConfig);
-    const QJsonObject track = serializeTrack(pTrack, settings.exposeFilePaths());
+    QJsonObject track = serializeTrack(pTrack, settings.exposeFilePaths());
+#ifdef __STEM__
+    // Static per-stem metadata (labels/colors) travels once with the load;
+    // live per-stem volume/mute streams in deck.tick, joined by index.
+    if (pTrack && pTrack->hasStem()) {
+        track.insert(QStringLiteral("stems"),
+                serializeStems(pTrack->getStemInfo()));
+    }
+#endif
     emit deckLoadedEvent(deck, generation, track);
     // Emitted after the load event (same queued connection, so ordering holds):
     // the server drops a grid/cue event for a deck it does not yet consider

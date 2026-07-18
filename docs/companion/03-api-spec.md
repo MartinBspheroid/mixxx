@@ -91,11 +91,16 @@ preflights are answered, so browser dashboard clients work cross-origin.
 | `POST /v1/library/focus` | `{"delta": 1}` | move focus between sidebar and track list |
 | `POST /v1/library/goto` | `{}` | activate the highlighted item (enter folder) |
 | `POST /v1/decks/:deck/loadSelected` | `{"play": false}` | load the highlighted library track to deck |
+| `POST /v1/decks/:deck/stems/:stem/volume` | `{"value": 0.0..1.0}` | set a stem's volume (stem is 1-based; 404 if not a stem track) |
+| `POST /v1/decks/:deck/stems/:stem/mute` | `{"muted": true}` | mute/unmute a stem (explicit, idempotent; default `true`) |
 
 Actions return `200 {"ok":true}` or an error. Every action is also reflected as a
 subsequent WS event (state change), so clients never need to poll after acting.
-**Not in v1 by design:** volume/EQ/crossfader, effects, delete/edit metadata,
-file operations, scratching — the phone is not a performance surface.
+**Not by design:** channel volume/EQ/crossfader, effects, delete/edit metadata,
+file operations, scratching — the phone is not a performance surface. **Stem**
+volume/mute is the deliberate exception: it is a per-track *arrangement* decision
+(which parts of a stem track play), not a live performance control, so the phone
+can own it. Stem state streams back in `deck.tick` (see below).
 
 ### `GET /v1/status` response
 
@@ -199,12 +204,23 @@ current state so late joiners are instantly correct):
     "durationSeconds": 269.3,
     "rating": 4,
     "playCount": 7,
-    "color": "#3F51B5"
+    "color": "#3F51B5",
+    "stems": [
+      { "label": "Drums",  "color": "#3f51b5" },
+      { "label": "Bass",   "color": "#00b400" },
+      { "label": "Melody", "color": "#ff9900" },
+      { "label": "Vocals", "color": "#e00040" }
+    ]
   },
   "waveform": { "summaryUrl": "/v1/tracks/1234/waveform/summary" },
   "serverTimeMs": 182934701
 }
 ```
+
+`track.stems` is present **only for stem tracks** (2–4 entries, in stem order).
+It carries the *static* per-stem label/color; the live per-stem volume/mute
+streams in `deck.tick` and is joined by array index. `color` is omitted when a
+stem has none.
 
 `deck.beatgrid` — the deck's beat grid, pushed right after `deck.loaded`, again
 whenever the grid changes (analysis finishes, tap BPM, manual adjust), and on
@@ -289,9 +305,21 @@ can draw the loop region directly on the waveform:
   "loopEnabled": true,
   "loopStart": 0.41,
   "loopEnd": 0.45,
+  "stems": [
+    { "volume": 1.0, "muted": false },
+    { "volume": 0.0, "muted": true },
+    { "volume": 1.0, "muted": false },
+    { "volume": 1.0, "muted": false }
+  ],
   "serverTimeMs": 182934701
 }
 ```
+
+`stems` appears **only for stem tracks**: the live per-stem `volume` (0..1) and
+`muted`, by index (join with `deck.loaded`'s `track.stems` for labels/colors). A
+stem volume/mute change also fires a tick, so the HUD stays live; the ≥1 Hz
+keepalive re-sends current values, so a client that missed one self-corrects
+within a second.
 
 `master.tick` — master-bus levels, change-gated at the tick cadence:
 
