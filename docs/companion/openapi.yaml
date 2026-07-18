@@ -126,6 +126,47 @@ paths:
       responses:
         "200": {description: OK, content: {application/json: {schema: {$ref: "#/components/schemas/DeckState"}}}}
         "404": {$ref: "#/components/responses/NotFound"}
+  /v1/decks/{deck}/suggestions:
+    get:
+      summary: "What can I play next: ranked compatible tracks for the track on this deck"
+      parameters:
+        - {name: deck, in: path, required: true, schema: {type: integer}}
+        - {name: limit, in: query, required: false, schema: {type: integer, default: 20, minimum: 1, maximum: 100}}
+        - {name: bpmWindow, in: query, required: false, schema: {type: integer, description: "±BPM candidate band; ≤0 uses the default of 8"}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deck: {type: integer}
+                  fromTrack:
+                    type: object
+                    properties:
+                      id: {type: integer}
+                      title: {type: string}
+                      artist: {type: string}
+                      bpm: {type: number}
+                      key: {type: string}
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        artist: {type: string}
+                        title: {type: string}
+                        album: {type: string}
+                        bpm: {type: number}
+                        key: {type: string}
+                        durationSeconds: {type: number}
+                        rating: {type: integer}
+                        playedTonight: {type: boolean}
+                        score: {type: number}
+                        reasons: {type: array, items: {type: string}}
+        "404": {$ref: "#/components/responses/NotFound"}
   /v1/decks/{deck}/load:
     post:
       summary: Load a library track to the deck (async; confirmed by deck.loaded)

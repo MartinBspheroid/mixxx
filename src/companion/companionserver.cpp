@@ -631,6 +631,43 @@ HttpResponse CompanionServer::route(const HttpRequest& request) {
                 QJsonDocument(deckStateJson(deck)).toJson(QJsonDocument::Compact));
     }
 
+    // GET /v1/decks/:deck/suggestions — "what can I play next"
+    if (request.method == "GET" && segments.size() == 4 &&
+            segments.at(0) == QLatin1String("v1") &&
+            segments.at(1) == QLatin1String("decks") &&
+            segments.at(3) == QLatin1String("suggestions")) {
+        bool deckOk = false;
+        const int deck = segments.at(2).toInt(&deckOk);
+        if (!deckOk) {
+            return HttpResponse::error(400, "bad_request", "invalid deck");
+        }
+        if (!isValidDeck(deck)) {
+            return HttpResponse::error(404, "not_found", "no such deck");
+        }
+        int limit = 20;
+        if (request.query.hasQueryItem(QStringLiteral("limit"))) {
+            limit = request.query.queryItemValue(QStringLiteral("limit")).toInt();
+        }
+        limit = qBound(1, limit, 100);
+        const int bpmWindow =
+                request.query.queryItemValue(QStringLiteral("bpmWindow")).toInt();
+        QByteArray json;
+        const bool ok = QMetaObject::invokeMethod(m_pQueryHandler,
+                "getDeckSuggestions",
+                Qt::BlockingQueuedConnection,
+                Q_RETURN_ARG(QByteArray, json),
+                Q_ARG(int, deck),
+                Q_ARG(int, limit),
+                Q_ARG(int, bpmWindow));
+        if (!ok) {
+            return HttpResponse::error(500, "internal");
+        }
+        if (json.isEmpty()) {
+            return HttpResponse::error(404, "not_found", "deck is empty");
+        }
+        return HttpResponse::json(200, json);
+    }
+
     // GET /v1/tracks/:id  |  /v1/tracks/:id/cues  |  /v1/tracks/:id/waveform/summary
     if (request.method == "GET" && segments.size() >= 3 &&
             segments.at(0) == QLatin1String("v1") &&

@@ -18,6 +18,7 @@ class TrackId;
 class TrackModel;
 class QThread;
 class QTimer;
+class QSqlDatabase;
 
 namespace mixxx {
 namespace companion {
@@ -97,6 +98,11 @@ class CompanionService : public QObject {
     QByteArray getCrateTracks(int crateId);
     /// Tracks of the current session-history playlist with played-at times.
     QByteArray getHistoryTracks();
+    /// "What can I play next": harmonically + tempo compatible, session-fresh
+    /// candidates scored against the track on `deck` (1-based). Empty JSON body
+    /// (-> 404) if the deck has nothing loaded. `limit` caps results;
+    /// `bpmWindow` is the +-BPM prefilter (<=0 means a sensible default).
+    QByteArray getDeckSuggestions(int deck, int limit, int bpmWindow);
 
   signals:
     void deckLoadedEvent(int deck, quint64 generation, const QJsonObject& track);
@@ -131,6 +137,9 @@ class CompanionService : public QObject {
     void emitLibraryView();
     void queueLibraryChanged(const char* field, const QSet<TrackId>& trackIds);
     QJsonObject buildCursorWindow(TrackModel* pTrackModel, int cursorRow) const;
+    /// Track ids in the current session's set-log playlist (for "played
+    /// tonight" freshness). Empty if there is no history yet.
+    QSet<int> currentSessionTrackIds(QSqlDatabase& db) const;
 
     UserSettingsPointer m_pConfig;
     PlayerManager* m_pPlayerManager;

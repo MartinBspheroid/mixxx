@@ -4,6 +4,10 @@
 #include <QMetaObject>
 #include <QThread>
 #include <QTimer>
+#include <QVector>
+
+#include <algorithm>
+#include <cmath>
 
 #include <QDataStream>
 #include <QDateTime>
@@ -15,9 +19,12 @@
 
 #include "companion/companionserver.h"
 #include "companion/companionsettings.h"
+#include "companion/harmonic.h"
 #include "companion/pairingmanager.h"
 #include "companion/trackserializer.h"
 #include "companion/waveformmxwf.h"
+#include "control/controlobject.h"
+#include "preferences/configobject.h"
 #include <QAbstractItemModel>
 #include <QBuffer>
 #include <QImage>
@@ -473,6 +480,7 @@ QByteArray CompanionService::runLibrarySearch(const QString& q,
             "WHERE ") + whereClause;
 
     QSqlDatabase db = pCollection->database();
+    const QSet<int> playedIds = currentSessionTrackIds(db);
 
     // Total (capped at 1000; a value of 1000 means ">= 1000").
     int total = 0;
@@ -521,9 +529,13 @@ QByteArray CompanionService::runLibrarySearch(const QString& q,
     } else {
         while (query.next()) {
             QJsonObject row;
-            row.insert(QStringLiteral("id"), query.value(0).toInt());
+            const int trackId = query.value(0).toInt();
+            row.insert(QStringLiteral("id"), trackId);
             row.insert(QStringLiteral("title"), query.value(2).toString());
             row.insert(QStringLiteral("artist"), query.value(1).toString());
+            if (playedIds.contains(trackId)) {
+                row.insert(QStringLiteral("playedTonight"), true);
+            }
             const QString album = query.value(3).toString();
             if (!album.isEmpty()) {
                 row.insert(QStringLiteral("album"), album);
@@ -908,6 +920,199 @@ QByteArray CompanionService::getHistoryTracks() {
     root.insert(QStringLiteral("id"), playlistId);
     root.insert(QStringLiteral("name"), name);
     root.insert(QStringLiteral("tracks"), tracks);
+    return compactJson(root);
+}
+
+QSet<int> CompanionService::currentSessionTrackIds(QSqlDatabase& db) const {
+    // The newest set-log playlist (hidden == 2) is the current session.
+    QSet<int> ids;
+    QSqlQuery latest(db);
+    latest.prepare(QStringLiteral(
+            "SELECT id FROM Playlists WHERE hidden = 2 ORDER BY id DESC LIMIT 1"));
+    if (!latest.exec() || !latest.next()) {
+        return ids;
+    }
+    QSqlQuery query(db);
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+            "SELECT track_id FROM PlaylistTracks WHERE playlist_id = :id"));
+    query.bindValue(QStringLiteral(":id"), latest.value(0).toInt());
+    if (query.exec()) {
+        while (query.next()) {
+            ids.insert(query.value(0).toInt());
+        }
+    }
+    return ids;
+}
+
+QByteArray CompanionService::getDeckSuggestions(int deck, int limit, int bpmWindow) {
+    // Main thread (Track + DB access). Turns the app from a mirror into a tool:
+    // given what is on `deck`, score compatible next tracks by harmonic key,
+    // tempo, energy direction and session freshness. Scoring itself lives in the
+    // pure, unit-tested harmonic core; this method only gathers candidates and
+    // ranks them.
+    using track::io::key::ChromaticKey;
+
+    VERIFY_OR_DEBUG_ASSERT(m_pTrackCollectionManager) {
+        return QByteArray();
+    }
+    const TrackPointer pFrom = m_deckTracks.value(deck);
+    if (!pFrom) {
+        return QByteArray(); // -> 404: nothing loaded to suggest against
+    }
+
+    const ChromaticKey fromKey = pFrom->getKey();
+    // Prefer the deck's live (rate-adjusted) BPM so suggestions honor the fader.
+    double fromBpm = pFrom->getBpm();
+    const double liveBpm = ControlObject::get(ConfigKey(
+            PlayerManager::groupForDeck(deck - 1), QStringLiteral("bpm")));
+    if (liveBpm > 0.0) {
+        fromBpm = liveBpm;
+    }
+    const int fromId = pFrom->getId().toVariant().toInt();
+
+    if (bpmWindow <= 0) {
+        bpmWindow = 8; // default +-8 BPM candidate window
+    }
+
+    TrackCollection* pCollection = m_pTrackCollectionManager->internalCollection();
+    QSqlDatabase db = pCollection->database();
+    const QSet<int> playedIds = currentSessionTrackIds(db);
+
+    // Prefilter in SQL: within the BPM window, and either harmonically
+    // compatible or key-unknown (so unanalyzed tracks still surface). Known
+    // clashing keys are excluded here to keep the C++ scoring set small.
+    QStringList conditions;
+    conditions << QStringLiteral("library.mixxx_deleted = 0")
+               << QStringLiteral("track_locations.fs_deleted = 0")
+               << QStringLiteral("library.id <> :fromId")
+               << QStringLiteral("bpm > 0");
+    if (fromBpm > 0.0) {
+        conditions << QStringLiteral("bpm BETWEEN :bpmLo AND :bpmHi");
+    }
+    if (fromKey != track::io::key::INVALID) {
+        QStringList compatibleKeys;
+        for (int k = track::io::key::C_MAJOR; k <= track::io::key::B_MINOR; ++k) {
+            const harmonic::KeyRelation rel =
+                    harmonic::relation(fromKey, static_cast<ChromaticKey>(k));
+            if (rel == harmonic::KeyRelation::Same ||
+                    rel == harmonic::KeyRelation::RelativeMode ||
+                    rel == harmonic::KeyRelation::Adjacent) {
+                compatibleKeys << QString::number(k);
+            }
+        }
+        if (!compatibleKeys.isEmpty()) {
+            conditions << (QStringLiteral("(key_id IN (") +
+                    compatibleKeys.join(QLatin1Char(',')) +
+                    QStringLiteral(") OR key_id = 0)"));
+        }
+    }
+
+    // Fetch closest-tempo candidates first, capped, so a huge library stays
+    // bounded while keeping the tracks most likely to score well.
+    QSqlQuery query(db);
+    query.setForwardOnly(true);
+    query.prepare(QStringLiteral(
+                          "SELECT library.id, artist, title, album, bpm, key, "
+                          "duration, rating, key_id "
+                          "FROM library "
+                          "INNER JOIN track_locations "
+                          "ON library.location = track_locations.id "
+                          "WHERE ") +
+            conditions.join(QStringLiteral(" AND ")) +
+            QStringLiteral(" ORDER BY ABS(bpm - :fromBpm) ASC LIMIT 1500"));
+    query.bindValue(QStringLiteral(":fromId"), fromId);
+    query.bindValue(QStringLiteral(":fromBpm"), fromBpm);
+    if (fromBpm > 0.0) {
+        query.bindValue(QStringLiteral(":bpmLo"), fromBpm - bpmWindow);
+        query.bindValue(QStringLiteral(":bpmHi"), fromBpm + bpmWindow);
+    }
+
+    struct Ranked {
+        double score;
+        int id;
+        QJsonObject row;
+    };
+    QVector<Ranked> ranked;
+    if (query.exec()) {
+        while (query.next()) {
+            const int trackId = query.value(0).toInt();
+            harmonic::Candidate candidate;
+            candidate.fromBpm = fromBpm;
+            candidate.fromKey = fromKey;
+            candidate.toBpm = query.value(4).toDouble();
+            candidate.toKey = static_cast<ChromaticKey>(query.value(8).toInt());
+            candidate.playedTonight = playedIds.contains(trackId);
+            candidate.rating = query.value(7).toInt();
+            const harmonic::Score scored = harmonic::scoreCandidate(candidate);
+
+            QJsonObject row;
+            row.insert(QStringLiteral("id"), trackId);
+            row.insert(QStringLiteral("artist"), query.value(1).toString());
+            row.insert(QStringLiteral("title"), query.value(2).toString());
+            const QString album = query.value(3).toString();
+            if (!album.isEmpty()) {
+                row.insert(QStringLiteral("album"), album);
+            }
+            if (candidate.toBpm > 0.0) {
+                row.insert(QStringLiteral("bpm"), candidate.toBpm);
+            }
+            const QString keyText = query.value(5).toString();
+            if (!keyText.isEmpty()) {
+                row.insert(QStringLiteral("key"), keyText);
+            }
+            row.insert(QStringLiteral("durationSeconds"), query.value(6).toDouble());
+            if (candidate.rating > 0) {
+                row.insert(QStringLiteral("rating"), candidate.rating);
+            }
+            if (candidate.playedTonight) {
+                row.insert(QStringLiteral("playedTonight"), true);
+            }
+            row.insert(QStringLiteral("score"),
+                    std::round(scored.score * 10.0) / 10.0);
+            QJsonArray reasons;
+            for (const QString& reason : scored.reasons) {
+                reasons.append(reason);
+            }
+            row.insert(QStringLiteral("reasons"), reasons);
+
+            ranked.append(Ranked{scored.score, trackId, row});
+        }
+    } else {
+        kLogger.warning() << "suggestions query failed:"
+                          << query.lastError().text();
+    }
+
+    // Highest score first; ties broken by id for a stable order.
+    std::stable_sort(ranked.begin(), ranked.end(),
+            [](const Ranked& a, const Ranked& b) {
+                if (a.score != b.score) {
+                    return a.score > b.score;
+                }
+                return a.id < b.id;
+            });
+
+    QJsonArray suggestions;
+    for (int i = 0; i < ranked.size() && i < limit; ++i) {
+        suggestions.append(ranked.at(i).row);
+    }
+
+    QJsonObject fromTrack;
+    fromTrack.insert(QStringLiteral("id"), fromId);
+    fromTrack.insert(QStringLiteral("title"), pFrom->getTitle());
+    fromTrack.insert(QStringLiteral("artist"), pFrom->getArtist());
+    if (fromBpm > 0.0) {
+        fromTrack.insert(QStringLiteral("bpm"), fromBpm);
+    }
+    const QString fromKeyText = pFrom->getKeyText();
+    if (!fromKeyText.isEmpty()) {
+        fromTrack.insert(QStringLiteral("key"), fromKeyText);
+    }
+
+    QJsonObject root;
+    root.insert(QStringLiteral("deck"), deck);
+    root.insert(QStringLiteral("fromTrack"), fromTrack);
+    root.insert(QStringLiteral("suggestions"), suggestions);
     return compactJson(root);
 }
 

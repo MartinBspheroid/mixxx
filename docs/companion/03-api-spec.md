@@ -73,6 +73,7 @@ preflights are answered, so browser dashboard clients work cross-origin.
 | `GET /v1/crates` | `{crates:[{id,name,trackCount}]}` |
 | `GET /v1/crates/:id/tracks` | `{id,name,tracks:[TrackSearchRow]}` by artist/title |
 | `GET /v1/history/current/tracks` | current session history: `{id,name,tracks:[... + position, playedAtIso]}` |
+| `GET /v1/decks/:deck/suggestions?limit=&bpmWindow=` | "what can I play next" for the track on `deck` — see below |
 
 ### Actions (T07, POST, JSON body, whitelist only)
 
@@ -119,6 +120,42 @@ via the session code intentionally does not appear there.
 
 ```
 ```
+
+### `GET /v1/decks/:deck/suggestions` — "what can I play next"
+
+Given the track currently on `deck`, returns compatible next tracks ranked best
+first. Candidates are prefiltered to a `±bpmWindow` tempo band (default `8` BPM)
+and to harmonically compatible or key-unknown tracks, then scored by the pure
+[harmonic core](../../src/companion/harmonic.h): key relation (same / relative /
+adjacent on the Camelot–Open-Key wheel), tempo closeness, energy direction
+(BPM up/down), rating, and **session freshness** — a track already in the current
+set-log is heavily penalized so a repeat never outranks a fresh option. The
+`fromBpm` used is the deck's live, rate-adjusted BPM.
+
+`limit` (1–100, default 20) caps results; `bpmWindow` (≤0 → default) widens or
+narrows the tempo band. `404 not_found` if the deck is empty.
+
+```json
+{
+  "deck": 1,
+  "fromTrack": { "id": 1234, "title": "Glue", "artist": "Bicep",
+                 "bpm": 129.98, "key": "8A" },
+  "suggestions": [
+    { "id": 5678, "artist": "Four Tet", "title": "Baby", "bpm": 130.0,
+      "key": "8A", "durationSeconds": 312.0, "rating": 5, "score": 82.0,
+      "reasons": ["perfect key", "tempo match"] },
+    { "id": 9012, "artist": "Overmono", "title": "So U Kno", "bpm": 132.0,
+      "key": "9A", "durationSeconds": 300.0, "playedTonight": true,
+      "score": -62.0, "reasons": ["safe blend", "+1 energy", "already played"] }
+  ]
+}
+```
+
+`reasons` are short tags the client shows verbatim (`"perfect key"`,
+`"energy switch"`, `"safe blend"`, `"key clash"`, `"tempo match"`,
+`"slight stretch"`, `"big BPM jump"`, `"+1 energy"`, `"-1 energy"`,
+`"already played"`). `playedTonight` (also added to `library/search` rows) marks
+tracks already in the current set-log.
 
 ---
 

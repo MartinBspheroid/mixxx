@@ -86,7 +86,8 @@ Codes: `bad_request` (400), `unauthorized` (401), `action_not_allowed` (403),
 | GET | `/v1/tracks/:id` | TrackDto |
 | GET | `/v1/tracks/:id/cues` | cue markers (for a deck, prefer the pushed `deck.cues`) |
 | GET | `/v1/tracks/:id/waveform/summary` | binary MXWF blob (§6) |
-| GET | `/v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult |
+| GET | `/v1/library/search?q=&bpmMin=&bpmMax=&key=&limit=&offset=` | SearchResult (rows carry `playedTonight`) |
+| GET | `/v1/decks/:deck/suggestions?limit=&bpmWindow=` | "what can I play next" — ranked compatible tracks with `score` + `reasons` |
 | POST | `/v1/decks/:deck/load` `{trackId,play}` | load track to deck (202) |
 | POST | `/v1/decks/:deck/play` \| `pause` \| `cue` \| `sync` | transport |
 | POST | `/v1/decks/:deck/seek` `{position}` | seek 0..1 (refused while playing unless `force`) |
